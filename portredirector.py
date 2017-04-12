@@ -14,6 +14,12 @@ except ImportError:
     print("Error: Package python-iptables is needed.", file=sys.stderr)
     exit(11)
 
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except ImportError:
+    uvloop = None
+
 
 __doc__ = """
 PyPortRedirector is a Linux TCP client-server proxy able to redirect all data from one address to another by 
@@ -169,9 +175,7 @@ class Server(object):
             loop = Server.loop
             sock.setblocking(False)
             yield from loop.sock_connect(sock, (host, port))
-            # noinspection PyProtectedMember
-            transport, protocol = yield from loop._create_connection_transport(
-                sock, protocol_factory, False, None)
+            transport, protocol = yield from loop.create_connection(protocol_factory, sock=sock)
             return transport, protocol
 
         def data_received(self, data):
@@ -348,8 +352,8 @@ class Client(object):
                 make_server = loop.create_server(Client.PeerServer, forwardHost, int(forwardPort), reuse_port=True)
                 server = loop.run_until_complete(make_server)
 
-                server.listenAddress = forwardHost + ':' + str(forwardPort)
-                print('Waiting for client connections on {}...'.format(server.listenAddress))
+                listenAddress = forwardHost + ':' + str(forwardPort)
+                print('Waiting for client connections on {}...'.format(listenAddress))
 
                 Client.servers.append(server)
 
