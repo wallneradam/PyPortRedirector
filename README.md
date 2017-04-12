@@ -42,7 +42,7 @@ portredirector.py -l 0.0.0.0:10000 -p 80 -p 443
 
 If your service on M2 is listening on other port (e.g. 10080 and 10443), you can replace ports got from client:
 ```bash
-portredirector.py -l 0.0.0.0:10000 -p 10080 -p 10443 -r 10080.80 -r 10443.443
+portredirector.py -l 0.0.0.0:10000 -p 80 -p 443 -r 80.10080 -r 443.10443
 ```
 
 More info is in the help:
