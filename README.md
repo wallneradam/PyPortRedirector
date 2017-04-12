@@ -83,10 +83,10 @@ The image uses Python 3.6 on Alpine Linux to be as small as possible. It contain
 
 Start client:
 ```bash
-docker exec -ti --rm -p 80:80 -p 443:443 pickapp/pyportredirector -c 2.2.2.2:12345 -p 80 -p 443
+docker run -ti --rm -p 80:80 -p 443:443 pickapp/pyportredirector -c 2.2.2.2:12345 -p 80 -p 443
 ```
 
 Start server:
 ```bash
-docker exec -ti --rm --privileged --net=host pickapp/pyportredirector -l 0.0.0.0:12345 -p 80 -p 443
+docker run -ti --rm --privileged --net=host pickapp/pyportredirector -l 0.0.0.0:12345 -p 80 -p 443
 ```
