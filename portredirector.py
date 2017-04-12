@@ -38,7 +38,7 @@ IPTABLES_CHAIN_PREFIX = 'PYPORTREDIRECT_'
 
 class Server(object):
     """
-    Server listening for portredirector peers
+    Server listening for portredirector clients
     """
     servicePorts = {}
     replacePorts = {}
@@ -78,17 +78,29 @@ class Server(object):
 
         # Create iptables chain
         ipt_nat = iptc.Table(iptc.Table.NAT)
-        Server.ipt_snat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'SNAT')
-        Server.ipt_dnat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'DNAT')
+        try:
+            Server.ipt_snat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'SNAT')
+        except iptc.ip4tc.IPTCError:
+            Server.ipt_snat_chain = iptc.Chain(ipt_nat, IPTABLES_CHAIN_PREFIX + 'SNAT')
+            Server.ipt_snat_chain.flush()
+        try:
+            Server.ipt_dnat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'DNAT')
+        except iptc.ip4tc.IPTCError:
+            Server.ipt_dnat_chain = iptc.Chain(ipt_nat, IPTABLES_CHAIN_PREFIX + 'DNAT')
+            Server.ipt_dnat_chain.flush()
         # Create SNAT rule
         snatChain = iptc.Chain(ipt_nat, 'POSTROUTING')
         snat_rule = iptc.Rule()
         snat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'SNAT')
+        try: snatChain.delete_rule(snat_rule)
+        except iptc.ip4tc.IPTCError: pass
         snatChain.append_rule(snat_rule)
         # Create DNAT rule - (OUTPUT because local packets don't touch prerouting chain)
         dnatChain = iptc.Chain(ipt_nat, 'OUTPUT')
         dnat_rule = iptc.Rule()
         dnat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'DNAT')
+        try: dnatChain.delete_rule(dnat_rule)
+        except iptc.ip4tc.IPTCError: pass
         dnatChain.append_rule(dnat_rule)
 
         # Create listen socket
@@ -96,7 +108,7 @@ class Server(object):
         server = loop.run_until_complete(make_server)
 
         peerAddress = lhost + ':' + str(lport)
-        print('Waiting for redirector client peerConnections on {}...'.format(peerAddress))
+        print('Waiting for redirector client connections on {}...'.format(peerAddress))
 
         # Waiting until an end signal
         loop.run_forever()
@@ -122,7 +134,7 @@ class Server(object):
 
     class RedirectorServer(asyncio.Protocol):
         """
-        Accept connections and packets from redirector client
+        Accept connections from redirector client then create connection to service and transfer data between them
         """
         def __init__(self):
             self.redirectorClientTransport = None
@@ -305,7 +317,7 @@ class Server(object):
 
 class Client(object):
     """
-    Client accepting and forwarding peerConnections and packets to the server
+    Client accepting and forwarding connections and data to the server
     """
     servers = []
     redirectorClientConnections = set()
@@ -337,7 +349,7 @@ class Client(object):
                 server = loop.run_until_complete(make_server)
 
                 server.listenAddress = forwardHost + ':' + str(forwardPort)
-                print('Waiting for client peerConnections on {}...'.format(server.listenAddress))
+                print('Waiting for client connections on {}...'.format(server.listenAddress))
 
                 Client.servers.append(server)
 
@@ -395,7 +407,7 @@ class Client(object):
 
     class PeerServer(asyncio.Protocol):
         """
-        Get peerConnections on the forwardig ports and redirect through the client
+        Accept connections on the service ports and transfer data through the client
         """
         def __init__(self):
             self.peerTransport = None
