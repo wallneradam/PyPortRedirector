@@ -45,7 +45,7 @@ If your service on M2 is listening on other port (e.g. 10080 and 10443), you can
 portredirector.py -l 0.0.0.0:10000 -p 80 -p 443 -r 80.10080 -r 443.10443
 ```
 
-More info is in the help:
+More info in the help:
 ```bash
 portredirector.py -h
 ```
