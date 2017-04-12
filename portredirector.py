@@ -170,12 +170,11 @@ class Server(object):
             self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
             print('Redirector client connection from ' + self.redirectorClientAddress)
 
-        @asyncio.coroutine
-        def create_service_connection(self, protocol_factory, sock, host, port):
+        async def create_service_connection(self, protocol_factory, sock, host, port):
             loop = Server.loop
             sock.setblocking(False)
-            yield from loop.sock_connect(sock, (host, port))
-            transport, protocol = yield from loop.create_connection(protocol_factory, sock=sock)
+            await loop.sock_connect(sock, (host, port))
+            transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
             return transport, protocol
 
         def data_received(self, data):

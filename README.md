@@ -33,7 +33,13 @@ Another solution could be to create an SSH tunnel between the 2 machines. For th
 ## Dependencies
 
 - Python > v3.5
-- python-iptables: https://github.com/ldx/python-iptables
+- python-iptables - https://github.com/ldx/python-iptables
+
+### Optional
+
+- uvloop: https://github.com/MagicStack/uvloop
+
+It makes PyPortRedirector even faster. 
 
 ## Usage
  
@@ -73,7 +79,7 @@ Both the client and the server can be stopped by pressing CTRL+C, or by sending 
 
 You can use PyPortRedirector with docker but you need to enable host networking and privileged mode on the server side for making iptables working.
 
-The image uses Python 3.6 on Alpine Linux to be as small as possible.
+The image uses Python 3.6 on Alpine Linux to be as small as possible. It contains all the dependencies. It also enable local routing on the server automatically on eth0 by default. You can specify thi interfave with "-i" option e.g. "-i eth1". 
 
 Start client:
 ```bash

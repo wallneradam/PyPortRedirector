@@ -7,7 +7,7 @@ COPY docker_entry.sh /opt/
 
 RUN \
     # Install needed packages
-    apk add --no-cache iptables binutils gcc musl-dev make \
+    apk add --no-cache iptables binutils bash gcc musl-dev make \
     # find_library not working good in Python on Alpine Linux, so we create the needed symlinks insetead
     && ln -s /lib/ld-musl-x86_64.so.1 /lib/libc.so \
     && ln -s /usr/lib/libxtables.so.11 /lib/libxtables.so \
