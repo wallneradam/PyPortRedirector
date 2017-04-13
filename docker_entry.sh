@@ -1,7 +1,7 @@
 #!/bin/bash
 
 server=0;
-interface="eth0"
+interface=""
 
 # Parse params
 _interface=0
@@ -27,7 +27,7 @@ if [ ${server} -ne 0 ]; then
     fi
 
     # Enable local routing
-    eval "echo -n 1 >/proc/sys/net/ipv4/conf/${interface}/route_localnet"
+    [ "$interface" != "" ] && eval "echo -n 1 >/proc/sys/net/ipv4/conf/${interface}/route_localnet"
 fi
 
 exec /usr/local/bin/python3 -u /opt/portredirector.py ${args[@]}

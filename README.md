@@ -90,3 +90,16 @@ Start server:
 ```bash
 docker run -ti --rm --privileged --net=host pickapp/pyportredirector -l 0.0.0.0:12345 -p 80 -p 443
 ```
+
+#### If the service runs in docker as well
+
+If you run a service in a docker container with port bindings e.g. `docker run -p 80:80 ...`, docker will create some masquerade rule which changes original source address if the destination is not in docker network. The solution is using 172.17.0.1 as service host, which is the default host IP for Docker:
+
+```bash
+docker run -ti --rm --privileged --net=host pickapp/pyportredirector -l 0.0.0.0:12345 -p 172.17.0.1:80 -p 172.17.0.1:443
+```
+
+It will work in this special case, because the packets are originated from the docker proxy, so packets will be routed back and our DNAT rules can redirect them to PyPortRedirector.
+Of course you need to change the address if you have your own docker network created.
+
+It is good practice to bind the service only on the docker interface by specifying the host before port like this: `docker run -p 172.17.0.1:80:80`. This way the service cannot be accessed from outside world. 127.0.0.1 won't work, because of docker's own iptables rules.

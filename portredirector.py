@@ -53,6 +53,7 @@ class Server(object):
 
     loop = None
 
+    ipt_nat_table = None
     ipt_snat_chain = None
     ipt_dnat_chain = None
 
@@ -82,32 +83,46 @@ class Server(object):
             print("Port numbers must be integer!", file=sys.stderr)
             return
 
-        # Create iptables chain
-        ipt_nat = iptc.Table(iptc.Table.NAT)
+        ipt_nat_table = iptc.Table(iptc.Table.NAT)
+        ipt_nat_table.autocommit = False
+        Server.ipt_nat_table = ipt_nat_table
+        # Refresh table
+        ipt_nat_table.refresh()
+        # Create iptables chains
         try:
-            Server.ipt_snat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'SNAT')
+            Server.ipt_snat_chain = ipt_nat_table.create_chain(IPTABLES_CHAIN_PREFIX + 'SNAT')
         except iptc.ip4tc.IPTCError:
-            Server.ipt_snat_chain = iptc.Chain(ipt_nat, IPTABLES_CHAIN_PREFIX + 'SNAT')
+            Server.ipt_snat_chain = iptc.Chain(ipt_nat_table, IPTABLES_CHAIN_PREFIX + 'SNAT')
             Server.ipt_snat_chain.flush()
         try:
-            Server.ipt_dnat_chain = ipt_nat.create_chain(IPTABLES_CHAIN_PREFIX + 'DNAT')
+            Server.ipt_dnat_chain = ipt_nat_table.create_chain(IPTABLES_CHAIN_PREFIX + 'DNAT')
         except iptc.ip4tc.IPTCError:
-            Server.ipt_dnat_chain = iptc.Chain(ipt_nat, IPTABLES_CHAIN_PREFIX + 'DNAT')
+            Server.ipt_dnat_chain = iptc.Chain(ipt_nat_table, IPTABLES_CHAIN_PREFIX + 'DNAT')
             Server.ipt_dnat_chain.flush()
         # Create SNAT rule
-        snatChain = iptc.Chain(ipt_nat, 'POSTROUTING')
+        snatChain = iptc.Chain(ipt_nat_table, 'POSTROUTING')
         snat_rule = iptc.Rule()
         snat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'SNAT')
         try: snatChain.delete_rule(snat_rule)
         except iptc.ip4tc.IPTCError: pass
-        snatChain.append_rule(snat_rule)
+        snatChain.insert_rule(snat_rule)
         # Create DNAT rule - (OUTPUT because local packets don't touch prerouting chain)
-        dnatChain = iptc.Chain(ipt_nat, 'OUTPUT')
+        dnatChain = iptc.Chain(ipt_nat_table, 'OUTPUT')
         dnat_rule = iptc.Rule()
         dnat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'DNAT')
         try: dnatChain.delete_rule(dnat_rule)
         except iptc.ip4tc.IPTCError: pass
-        dnatChain.append_rule(dnat_rule)
+        dnatChain.insert_rule(dnat_rule)
+        # Create RETURN rules
+        return_rule = iptc.Rule()
+        return_rule.create_target('RETURN')
+        Server.ipt_snat_chain.append_rule(return_rule)
+        return_rule = iptc.Rule()
+        return_rule.create_target('RETURN')
+        Server.ipt_dnat_chain.append_rule(return_rule)
+
+        # Commit table
+        ipt_nat_table.commit()
 
         # Create listen socket
         make_server = loop.create_server(Server.RedirectorServer, lhost, int(lport), reuse_port=True)
@@ -128,12 +143,14 @@ class Server(object):
             service.close()
 
         # Delete iptables rules and chains
+        ipt_nat_table.refresh()
         Server.ipt_snat_chain.flush()
         Server.ipt_dnat_chain.flush()
         snatChain.delete_rule(snat_rule)
         dnatChain.delete_rule(dnat_rule)
-        ipt_nat.delete_chain(Server.ipt_snat_chain)
-        ipt_nat.delete_chain(Server.ipt_dnat_chain)
+        ipt_nat_table.commit()
+        ipt_nat_table.delete_chain(Server.ipt_snat_chain)
+        ipt_nat_table.delete_chain(Server.ipt_dnat_chain)
 
         # Close the loop
         loop.close()
@@ -164,18 +181,18 @@ class Server(object):
 
             self.buffer = bytearray()
 
-        def connection_made(self, redirectorClientTransport):
-            self.redirectorClientTransport = redirectorClientTransport
-            peername = redirectorClientTransport.get_extra_info('peername')
-            self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
-            print('Redirector client connection from ' + self.redirectorClientAddress)
-
         async def create_service_connection(self, protocol_factory, sock, host, port):
             loop = Server.loop
             sock.setblocking(False)
             await loop.sock_connect(sock, (host, port))
             transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
             return transport, protocol
+
+        def connection_made(self, redirectorClientTransport):
+            self.redirectorClientTransport = redirectorClientTransport
+            peername = redirectorClientTransport.get_extra_info('peername')
+            self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
+            print('Redirector client connection from ' + self.redirectorClientAddress)
 
         def data_received(self, data):
             # 1st data must contain peer address and the port to connect to
@@ -221,16 +238,19 @@ class Server(object):
                         self.redirectorClientTransport.close()
                         return
 
+                    # Refresh table
+                    Server.ipt_nat_table.refresh()
+
                     # Create iptables SNAT rule
                     rule = iptc.Rule()
                     rule.protocol = 'tcp'
-                    rule.dst = self.shost
+                    # rule.dst = self.shost
                     match = rule.create_match('tcp')
                     match.sport = str(self.cport)
                     match.dport = str(self.sport)
                     target = rule.create_target('SNAT')
                     target.to_source = self.peerAddress
-                    Server.ipt_snat_chain.append_rule(rule)
+                    Server.ipt_snat_chain.insert_rule(rule)
                     self.snatRule = rule
 
                     # Create iptables DNAT rule
@@ -243,8 +263,11 @@ class Server(object):
                     match.dport = str(self.pport)
                     target = rule.create_target('DNAT')
                     target.to_destination = self.clientAddress
-                    Server.ipt_dnat_chain.append_rule(rule)
+                    Server.ipt_dnat_chain.insert_rule(rule)
                     self.dnatRule = rule
+
+                    # Commit changes
+                    Server.ipt_nat_table.commit()
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
@@ -260,7 +283,7 @@ class Server(object):
 
                     # Create connection to service - we use our own socket to make our snat rule working
                     ctask = asyncio.ensure_future(self.create_service_connection(
-                        lambda: Server.ServiceClient(self.redirectorClientTransport, self),
+                        lambda: Server.ServiceClient(self),
                         csock, self.shost, self.sport))
                     ctask.add_done_callback(cbConnected)
 
@@ -288,17 +311,19 @@ class Server(object):
             print("Redirector client disconnected from", self.redirectorClientAddress)
 
             # Remove iptables nat rules
-            if self.snatRule and self.dnatRule:
-                Server.ipt_snat_chain.delete_rule(self.snatRule)
-                Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+            Server.ipt_nat_table.refresh()
+            if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
+            if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+            Server.ipt_nat_table.commit()
 
     class ServiceClient(asyncio.Protocol):
         """
         Connect to the original service ports
         """
-        def __init__(self, redirectorClientTransport, redirectorServer):
-            self.transport = self.redirectorClientTransport = redirectorClientTransport
+        def __init__(self, redirectorServer):
+            self.transport = None
             self.redirectorServer = redirectorServer
+            self.redirectorClientTransport = redirectorServer.redirectorClientTransport
 
         def connection_made(self, transport):
             self.transport = self.redirectorServer.serviceTransport = transport
@@ -383,10 +408,10 @@ class Client(object):
         """
         Connect to redirector server
         """
-        def __init__(self, peerTransport, peerServer):
-            self.peerTransport = peerTransport
-            self.peerServer = peerServer
+        def __init__(self, peerServer):
             self.transport = None
+            self.peerServer = peerServer
+            self.peerTransport = peerServer.peerTransport
 
         def connection_made(self, redirectorTransport):
             # Send peer info to the redirector server as 1st message
@@ -443,7 +468,7 @@ class Client(object):
 
             # Create connection to redirector server
             ctask = asyncio.ensure_future(Client.loop.create_connection(
-                lambda: Client.RedirectorClient(peerTransport, self),
+                lambda: Client.RedirectorClient(self),
                 Client.redirectorServerHost, Client.redirectorServerPort))
             ctask.add_done_callback(cbConnected)
 
