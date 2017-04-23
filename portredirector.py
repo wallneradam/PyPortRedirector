@@ -7,6 +7,7 @@ import asyncio
 import socket
 import signal
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 try:
     import iptc
@@ -41,6 +42,9 @@ __status__ = "Beta"
 
 # The name of redirector iptables chain
 IPTABLES_CHAIN_PREFIX = 'PYPORTREDIRECT_'
+
+# Global lock for iptables
+iptLock = Lock()
 
 
 class Server(object):
@@ -184,49 +188,52 @@ class Server(object):
 
         def create_rules(self):
             """ Create iptables DNAT and SNAT rules """
-            # Refresh table
-            Server.ipt_nat_table.refresh()
+            with iptLock:
+                # Create iptables SNAT rule
+                rule = iptc.Rule()
+                rule.protocol = 'tcp'
+                rule.dst = self.shost
+                match = rule.create_match('tcp')
+                match.sport = str(self.cport)
+                match.dport = str(self.sport)
+                target = rule.create_target('SNAT')
+                target.to_source = self.peerAddress
+                Server.ipt_snat_chain.insert_rule(rule)
+                self.snatRule = rule
 
-            # Create iptables SNAT rule
-            rule = iptc.Rule()
-            rule.protocol = 'tcp'
-            rule.dst = self.shost
-            match = rule.create_match('tcp')
-            match.sport = str(self.cport)
-            match.dport = str(self.sport)
-            target = rule.create_target('SNAT')
-            target.to_source = self.peerAddress
-            Server.ipt_snat_chain.insert_rule(rule)
-            self.snatRule = rule
+                # Create iptables DNAT rule
+                rule = iptc.Rule()
+                rule.protocol = 'tcp'
+                rule.src = self.shost
+                rule.dst = self.phost
+                match = rule.create_match('tcp')
+                match.sport = str(self.sport)
+                match.dport = str(self.pport)
+                target = rule.create_target('DNAT')
+                target.to_destination = self.clientAddress
+                Server.ipt_dnat_chain.insert_rule(rule)
+                self.dnatRule = rule
 
-            # Create iptables DNAT rule
-            rule = iptc.Rule()
-            rule.protocol = 'tcp'
-            rule.src = self.shost
-            rule.dst = self.phost
-            match = rule.create_match('tcp')
-            match.sport = str(self.sport)
-            match.dport = str(self.pport)
-            target = rule.create_target('DNAT')
-            target.to_destination = self.clientAddress
-            Server.ipt_dnat_chain.insert_rule(rule)
-            self.dnatRule = rule
-
-            # Commit changes
-            Server.ipt_nat_table.commit()
+                # Commit changes
+                Server.ipt_nat_table.refresh()
+                Server.ipt_nat_table.commit()
+                Server.ipt_nat_table.refresh()
 
         def delete_rules(self):
             """ Remove iptables nat rules """
-            Server.ipt_nat_table.refresh()
-            try:
-                if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
-            except iptc.ip4tc.IPTCError:
-                pass
-            try:
-                if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
-                Server.ipt_nat_table.commit()
-            except iptc.ip4tc.IPTCError:
-                pass
+            with iptLock:
+                Server.ipt_nat_table.refresh()
+                try:
+                    if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
+                except iptc.ip4tc.IPTCError:
+                    pass
+                try:
+                    if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+                    Server.ipt_nat_table.refresh()
+                    Server.ipt_nat_table.commit()
+                    Server.ipt_nat_table.refresh()
+                except iptc.ip4tc.IPTCError:
+                    pass
 
         async def create_service_connection(self, protocol_factory, sock, host, port):
             """ Create iptables rules and connect to service """
@@ -523,7 +530,7 @@ def main():
                         help='If the local port on the redirector client is not the same as the listen port on server '
                              'side, this parameter can replace the remote port sent by client to a new one. '
                              'The old and new port should be separated by comma (e.g. 80.1080)')
-    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 1.',
+    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 2.',
                         default=2)
 
     args = parser.parse_args()
