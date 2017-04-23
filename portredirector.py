@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import socket
 import signal
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     import iptc
@@ -181,8 +182,56 @@ class Server(object):
 
             self.buffer = bytearray()
 
+        def create_rules(self):
+            """ Create iptables DNAT and SNAT rules """
+            # Refresh table
+            Server.ipt_nat_table.refresh()
+
+            # Create iptables SNAT rule
+            rule = iptc.Rule()
+            rule.protocol = 'tcp'
+            rule.dst = self.shost
+            match = rule.create_match('tcp')
+            match.sport = str(self.cport)
+            match.dport = str(self.sport)
+            target = rule.create_target('SNAT')
+            target.to_source = self.peerAddress
+            Server.ipt_snat_chain.insert_rule(rule)
+            self.snatRule = rule
+
+            # Create iptables DNAT rule
+            rule = iptc.Rule()
+            rule.protocol = 'tcp'
+            rule.src = self.shost
+            rule.dst = self.phost
+            match = rule.create_match('tcp')
+            match.sport = str(self.sport)
+            match.dport = str(self.pport)
+            target = rule.create_target('DNAT')
+            target.to_destination = self.clientAddress
+            Server.ipt_dnat_chain.insert_rule(rule)
+            self.dnatRule = rule
+
+            # Commit changes
+            Server.ipt_nat_table.commit()
+
+        def delete_rules(self):
+            """ Remove iptables nat rules """
+            Server.ipt_nat_table.refresh()
+            try:
+                if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
+            except iptc.ip4tc.IPTCError:
+                pass
+            try:
+                if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+                Server.ipt_nat_table.commit()
+            except iptc.ip4tc.IPTCError:
+                pass
+
         async def create_service_connection(self, protocol_factory, sock, host, port):
+            """ Create iptables rules and connect to service """
             loop = Server.loop
+            await loop.run_in_executor(None, self.create_rules)
             sock.setblocking(False)
             await loop.sock_connect(sock, (host, port))
             transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
@@ -198,7 +247,9 @@ class Server(object):
             # 1st data must contain peer address and the port to connect to
             if self.sport is None:
                 try:
-                    if b"\n" not in data or b":" not in data: raise ValueError()
+                    # Max length of 1st message is ("111.222.333.444:12345:54321\n") 28
+                    chunk = data[:28]
+                    if b"\n" not in chunk or b":" not in chunk: raise ValueError()
                     # Split concatenated messages
                     peerData, data = data.split(b"\n", 1)
 
@@ -237,37 +288,6 @@ class Server(object):
                         print("Error: ", e, file=sys.stderr)
                         self.redirectorClientTransport.close()
                         return
-
-                    # Refresh table
-                    Server.ipt_nat_table.refresh()
-
-                    # Create iptables SNAT rule
-                    rule = iptc.Rule()
-                    rule.protocol = 'tcp'
-                    # rule.dst = self.shost
-                    match = rule.create_match('tcp')
-                    match.sport = str(self.cport)
-                    match.dport = str(self.sport)
-                    target = rule.create_target('SNAT')
-                    target.to_source = self.peerAddress
-                    Server.ipt_snat_chain.insert_rule(rule)
-                    self.snatRule = rule
-
-                    # Create iptables DNAT rule
-                    rule = iptc.Rule()
-                    rule.protocol = 'tcp'
-                    rule.src = self.shost
-                    rule.dst = self.phost
-                    match = rule.create_match('tcp')
-                    match.sport = str(self.sport)
-                    match.dport = str(self.pport)
-                    target = rule.create_target('DNAT')
-                    target.to_destination = self.clientAddress
-                    Server.ipt_dnat_chain.insert_rule(rule)
-                    self.dnatRule = rule
-
-                    # Commit changes
-                    Server.ipt_nat_table.commit()
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
@@ -310,15 +330,8 @@ class Server(object):
 
             print("Redirector client disconnected from", self.redirectorClientAddress)
 
-            # Remove iptables nat rules
-            Server.ipt_nat_table.refresh()
-            try:
-                if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
-            except iptc.ip4tc.IPTCError: pass
-            try:
-                if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
-                Server.ipt_nat_table.commit()
-            except iptc.ip4tc.IPTCError: pass
+            # Delete rules in non blocking way
+            asyncio.ensure_future(Server.loop.run_in_executor(None, self.delete_rules))
 
     class ServiceClient(asyncio.Protocol):
         """
@@ -510,6 +523,8 @@ def main():
                         help='If the local port on the redirector client is not the same as the listen port on server '
                              'side, this parameter can replace the remote port sent by client to a new one. '
                              'The old and new port should be separated by comma (e.g. 80.1080)')
+    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 1.',
+                        default=2)
 
     args = parser.parse_args()
 
@@ -522,11 +537,19 @@ def main():
         parser.print_usage()
         exit(2)
 
+    if args.threads and args.threads < 1:
+        print("The worker-thread parameter must be greater than 0!")
+        exit(3)
+    threadCount = args.threads
+
     forwardPorts = args.port
     replacePorts = args.replace
 
     # The event loop
     loop = asyncio.get_event_loop()
+
+    # Process executor
+    loop.set_default_executor(ThreadPoolExecutor(threadCount))
 
     # Signal handler for exiting the loop
     async def shutdown():
@@ -550,7 +573,7 @@ def main():
         except ValueError:
             print("Wrong listen address format! It should be like 0.0.0.0:1234...", file=sys.stderr)
             parser.print_usage()
-            exit(3)
+            exit(4)
     else:
         try:
             host, port = args.connect.split(":")
@@ -558,7 +581,7 @@ def main():
         except ValueError:
             print("Wrong address format! It should be like 0.0.0.0:1234...", file=sys.stderr)
             parser.print_usage()
-            exit(4)
+            exit(5)
 
 
 if __name__ == '__main__': main()
