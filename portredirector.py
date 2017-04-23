@@ -189,6 +189,9 @@ class Server(object):
         def create_rules(self):
             """ Create iptables DNAT and SNAT rules """
             with iptLock:
+                # Refresh rules
+                Server.ipt_nat_table.refresh()
+
                 # Create iptables SNAT rule
                 rule = iptc.Rule()
                 rule.protocol = 'tcp'
@@ -215,13 +218,12 @@ class Server(object):
                 self.dnatRule = rule
 
                 # Commit changes
-                Server.ipt_nat_table.refresh()
                 Server.ipt_nat_table.commit()
-                Server.ipt_nat_table.refresh()
 
         def delete_rules(self):
             """ Remove iptables nat rules """
             with iptLock:
+                # Refresh table
                 Server.ipt_nat_table.refresh()
                 try:
                     if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
@@ -229,9 +231,8 @@ class Server(object):
                     pass
                 try:
                     if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
-                    Server.ipt_nat_table.refresh()
+                    # Commit changes
                     Server.ipt_nat_table.commit()
-                    Server.ipt_nat_table.refresh()
                 except iptc.ip4tc.IPTCError:
                     pass
 
