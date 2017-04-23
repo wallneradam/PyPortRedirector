@@ -312,9 +312,13 @@ class Server(object):
 
             # Remove iptables nat rules
             Server.ipt_nat_table.refresh()
-            if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
-            if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
-            Server.ipt_nat_table.commit()
+            try:
+                if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
+            except iptc.ip4tc.IPTCError: pass
+            try:
+                if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+                Server.ipt_nat_table.commit()
+            except iptc.ip4tc.IPTCError: pass
 
     class ServiceClient(asyncio.Protocol):
         """
