@@ -189,36 +189,42 @@ class Server(object):
         def create_rules(self):
             """ Create iptables DNAT and SNAT rules """
             with iptLock:
-                # Refresh rules
-                Server.ipt_nat_table.refresh()
+                try:
+                    # Refresh rules
+                    Server.ipt_nat_table.refresh()
 
-                # Create iptables SNAT rule
-                rule = iptc.Rule()
-                rule.protocol = 'tcp'
-                rule.src = self.shost
-                match = rule.create_match('tcp')
-                match.sport = str(self.cport)
-                match.dport = str(self.sport)
-                target = rule.create_target('SNAT')
-                target.to_source = self.peerAddress
-                Server.ipt_snat_chain.insert_rule(rule)
-                self.snatRule = rule
+                    # Create iptables SNAT rule
+                    rule = iptc.Rule()
+                    rule.protocol = 'tcp'
+                    rule.src = self.shost
+                    match = rule.create_match('tcp')
+                    match.sport = str(self.cport)
+                    match.dport = str(self.sport)
+                    target = rule.create_target('SNAT')
+                    target.to_source = self.peerAddress
+                    Server.ipt_snat_chain.insert_rule(rule)
+                    self.snatRule = rule
 
-                # Create iptables DNAT rule
-                rule = iptc.Rule()
-                rule.protocol = 'tcp'
-                rule.src = self.shost
-                rule.dst = self.phost
-                match = rule.create_match('tcp')
-                match.sport = str(self.sport)
-                match.dport = str(self.pport)
-                target = rule.create_target('DNAT')
-                target.to_destination = self.clientAddress
-                Server.ipt_dnat_chain.insert_rule(rule)
-                self.dnatRule = rule
+                    # Create iptables DNAT rule
+                    rule = iptc.Rule()
+                    rule.protocol = 'tcp'
+                    rule.src = self.shost
+                    rule.dst = self.phost
+                    match = rule.create_match('tcp')
+                    match.sport = str(self.sport)
+                    match.dport = str(self.pport)
+                    target = rule.create_target('DNAT')
+                    target.to_destination = self.clientAddress
+                    Server.ipt_dnat_chain.insert_rule(rule)
+                    self.dnatRule = rule
 
-                # Commit changes
-                Server.ipt_nat_table.commit()
+                    # Commit changes
+                    Server.ipt_nat_table.commit()
+
+                except iptc.ip4tc.IPTCError:
+                    return False
+
+            return True
 
         def delete_rules(self):
             """ Remove iptables nat rules """
@@ -226,30 +232,39 @@ class Server(object):
                 # Refresh table
                 Server.ipt_nat_table.refresh()
                 try:
-                    if self.snatRule: Server.ipt_snat_chain.delete_rule(self.snatRule)
-                except iptc.ip4tc.IPTCError:
-                    pass
+                    if self.snatRule:
+                        Server.ipt_snat_chain.delete_rule(self.snatRule)
+                        self.snatRule = None
+                except UnboundLocalError: pass
+                except iptc.ip4tc.IPTCError: pass
                 try:
-                    if self.dnatRule: Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+                    if self.dnatRule:
+                        Server.ipt_dnat_chain.delete_rule(self.dnatRule)
+                        self.dnatRule = None
                     # Commit changes
                     Server.ipt_nat_table.commit()
-                except iptc.ip4tc.IPTCError:
-                    pass
+                except UnboundLocalError: pass
+                except iptc.ip4tc.IPTCError: pass
 
         async def create_service_connection(self, protocol_factory, sock, host, port):
             """ Create iptables rules and connect to service """
             loop = Server.loop
-            await loop.run_in_executor(None, self.create_rules)
-            sock.setblocking(False)
-            await loop.sock_connect(sock, (host, port))
-            transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
-            return transport, protocol
+            if await loop.run_in_executor(None, self.create_rules):
+                sock.setblocking(False)
+                await loop.sock_connect(sock, (host, port))
+                transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
+                return transport, protocol
+            else:
+                raise Exception("IPTables rule creation error!")
 
         def connection_made(self, redirectorClientTransport):
-            self.redirectorClientTransport = redirectorClientTransport
-            peername = redirectorClientTransport.get_extra_info('peername')
-            self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
-            print('Redirector client connection from ' + self.redirectorClientAddress)
+            try:
+                self.redirectorClientTransport = redirectorClientTransport
+                peername = redirectorClientTransport.get_extra_info('peername')
+                self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
+                print('Redirector client connection from ' + self.redirectorClientAddress)
+            except BrokenPipeError:
+                pass
 
         def data_received(self, data):
             # 1st data must contain peer address and the port to connect to
