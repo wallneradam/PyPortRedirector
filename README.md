@@ -103,3 +103,11 @@ It will work in this special case, because the packets are originated from the d
 Of course you need to change the address if you have your own docker network created.
 
 It is good practice to bind the service only on the docker interface by specifying the host before port like this: `docker run -p 172.17.0.1:80:80`. This way the service cannot be accessed from outside world. 127.0.0.1 won't work, because of docker's own iptables rules.
+
+#### PyPy version
+
+I created an experimental PyPy version too, which can be used the same way as the original just with "pypy" tag (or version-pypy, e.g. 0.1-pypy):
+
+```bash
+docker run -ti --rm --privileged --net=host pickapp/pyportredirector:pypy -l 0.0.0.0:12345 -p 80 -p 443
+```
