@@ -7,13 +7,11 @@ COPY docker_entry.sh /opt/
 
 RUN \
     # Install needed packages
-    apt-get update && apt-get install -y iptables gcc \
-    # Install python-iptables package
-    && pip install --upgrade python-iptables \
+    apt-get update && apt-get install -y iptables \
     # Make entry script working with pypy
     && ln -s /usr/local/bin/pypy3 /usr/local/bin/python3 \
     # Clean unneeded packages
-    && apt-get autoremove -y --purge gcc && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
 

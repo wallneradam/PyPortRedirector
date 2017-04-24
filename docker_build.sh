@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NAME="pickapp/pyportredirector"
-VERSION=0.1
+VERSION=0.2
 
 [ "$1" == "pypy" ] && VERSION="$VERSION-pypy"
 

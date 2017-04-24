@@ -6,15 +6,6 @@ import argparse
 import asyncio
 import socket
 import signal
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
-
-try:
-    import iptc
-except ImportError:
-    iptc = None
-    print("Error: Package python-iptables is needed.", file=sys.stderr)
-    exit(11)
 
 try:
     # noinspection PyPackageRequirements
@@ -44,9 +35,6 @@ __status__ = "Beta"
 # The name of redirector iptables chain
 IPTABLES_CHAIN_PREFIX = 'PYPORTREDIRECT_'
 
-# Global lock for iptables
-iptLock = Lock()
-
 
 class Server(object):
     """
@@ -58,10 +46,6 @@ class Server(object):
     serviceConnections = set()
 
     loop = None
-
-    ipt_nat_table = None
-    ipt_snat_chain = None
-    ipt_dnat_chain = None
 
     @classmethod
     def createServer(cls, lhost, lport, servicePorts, replacePorts):
@@ -89,46 +73,8 @@ class Server(object):
             print("Port numbers must be integer!", file=sys.stderr)
             return
 
-        ipt_nat_table = iptc.Table(iptc.Table.NAT)
-        ipt_nat_table.autocommit = False
-        Server.ipt_nat_table = ipt_nat_table
-        # Refresh table
-        ipt_nat_table.refresh()
-        # Create iptables chains
-        try:
-            Server.ipt_snat_chain = ipt_nat_table.create_chain(IPTABLES_CHAIN_PREFIX + 'SNAT')
-        except iptc.ip4tc.IPTCError:
-            Server.ipt_snat_chain = iptc.Chain(ipt_nat_table, IPTABLES_CHAIN_PREFIX + 'SNAT')
-            Server.ipt_snat_chain.flush()
-        try:
-            Server.ipt_dnat_chain = ipt_nat_table.create_chain(IPTABLES_CHAIN_PREFIX + 'DNAT')
-        except iptc.ip4tc.IPTCError:
-            Server.ipt_dnat_chain = iptc.Chain(ipt_nat_table, IPTABLES_CHAIN_PREFIX + 'DNAT')
-            Server.ipt_dnat_chain.flush()
-        # Create SNAT rule
-        snatChain = iptc.Chain(ipt_nat_table, 'POSTROUTING')
-        snat_rule = iptc.Rule()
-        snat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'SNAT')
-        try: snatChain.delete_rule(snat_rule)
-        except iptc.ip4tc.IPTCError: pass
-        snatChain.insert_rule(snat_rule)
-        # Create DNAT rule - (OUTPUT because local packets don't touch prerouting chain)
-        dnatChain = iptc.Chain(ipt_nat_table, 'OUTPUT')
-        dnat_rule = iptc.Rule()
-        dnat_rule.create_target(IPTABLES_CHAIN_PREFIX + 'DNAT')
-        try: dnatChain.delete_rule(dnat_rule)
-        except iptc.ip4tc.IPTCError: pass
-        dnatChain.insert_rule(dnat_rule)
-        # Create RETURN rules
-        return_rule = iptc.Rule()
-        return_rule.create_target('RETURN')
-        Server.ipt_snat_chain.append_rule(return_rule)
-        return_rule = iptc.Rule()
-        return_rule.create_target('RETURN')
-        Server.ipt_dnat_chain.append_rule(return_rule)
-
-        # Commit table
-        ipt_nat_table.commit()
+        # Initialize iptables
+        loop.run_until_complete(Server.Iptables.createChains())
 
         # Create listen socket
         make_server = loop.create_server(Server.RedirectorServer, lhost, int(lport), reuse_port=True)
@@ -148,15 +94,8 @@ class Server(object):
         for service in Server.serviceConnections:
             service.close()
 
-        # Delete iptables rules and chains
-        ipt_nat_table.refresh()
-        Server.ipt_snat_chain.flush()
-        Server.ipt_dnat_chain.flush()
-        snatChain.delete_rule(snat_rule)
-        dnatChain.delete_rule(dnat_rule)
-        ipt_nat_table.commit()
-        ipt_nat_table.delete_chain(Server.ipt_snat_chain)
-        ipt_nat_table.delete_chain(Server.ipt_dnat_chain)
+        # Finalize iptables
+        loop.run_until_complete(Server.Iptables.deleteChains())
 
         # Close the loop
         loop.close()
@@ -187,76 +126,15 @@ class Server(object):
 
             self.buffer = bytearray()
 
-        def create_rules(self):
-            """ Create iptables DNAT and SNAT rules """
-            with iptLock:
-                try:
-                    # Refresh rules
-                    Server.ipt_nat_table.refresh()
-
-                    # Create iptables SNAT rule
-                    rule = iptc.Rule()
-                    rule.protocol = 'tcp'
-                    rule.src = self.shost
-                    match = rule.create_match('tcp')
-                    match.sport = str(self.cport)
-                    match.dport = str(self.sport)
-                    target = rule.create_target('SNAT')
-                    target.to_source = self.peerAddress
-                    Server.ipt_snat_chain.insert_rule(rule)
-                    self.snatRule = rule
-
-                    # Create iptables DNAT rule
-                    rule = iptc.Rule()
-                    rule.protocol = 'tcp'
-                    rule.src = self.shost
-                    rule.dst = self.phost
-                    match = rule.create_match('tcp')
-                    match.sport = str(self.sport)
-                    match.dport = str(self.pport)
-                    target = rule.create_target('DNAT')
-                    target.to_destination = self.clientAddress
-                    Server.ipt_dnat_chain.insert_rule(rule)
-                    self.dnatRule = rule
-
-                    # Commit changes
-                    Server.ipt_nat_table.commit()
-
-                except iptc.ip4tc.IPTCError:
-                    return False
-
-            return True
-
-        def delete_rules(self):
-            """ Remove iptables nat rules """
-            with iptLock:
-                # Refresh table
-                Server.ipt_nat_table.refresh()
-                try:
-                    if self.snatRule:
-                        Server.ipt_snat_chain.delete_rule(self.snatRule)
-                        self.snatRule = None
-                except UnboundLocalError: pass
-                except iptc.ip4tc.IPTCError: pass
-                try:
-                    if self.dnatRule:
-                        Server.ipt_dnat_chain.delete_rule(self.dnatRule)
-                        self.dnatRule = None
-                    # Commit changes
-                    Server.ipt_nat_table.commit()
-                except UnboundLocalError: pass
-                except iptc.ip4tc.IPTCError: pass
-
         async def create_service_connection(self, protocol_factory, sock, host, port):
             """ Create iptables rules and connect to service """
             loop = Server.loop
-            if await loop.run_in_executor(None, self.create_rules):
-                sock.setblocking(False)
-                await loop.sock_connect(sock, (host, port))
-                transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
-                return transport, protocol
-            else:
-                raise Exception("IPTables rule creation error!")
+            await Server.Iptables.addNatRules(self.clientAddress, self.cport, self.shost, self.sport,
+                                              self.phost, self.pport)
+            sock.setblocking(False)
+            await loop.sock_connect(sock, (host, port))
+            transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
+            return transport, protocol
 
         def connection_made(self, redirectorClientTransport):
             try:
@@ -329,9 +207,8 @@ class Server(object):
                             self.redirectorClientTransport.close()
 
                     # Create connection to service - we use our own socket to make our snat rule working
-                    ctask = asyncio.ensure_future(self.create_service_connection(
-                        lambda: Server.ServiceClient(self),
-                        csock, self.shost, self.sport))
+                    ctask = asyncio.ensure_future(self.create_service_connection(lambda: Server.ServiceClient(self),
+                                                                                 csock, self.shost, self.sport))
                     ctask.add_done_callback(cbConnected)
 
                 # Still none?
@@ -357,8 +234,9 @@ class Server(object):
 
                 print("Redirector client disconnected from", self.redirectorClientAddress)
             except BrokenPipeError: pass
-            # Delete rules in non blocking way
-            asyncio.ensure_future(Server.loop.run_in_executor(None, self.delete_rules))
+
+            # Delete rules
+            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.clientAddress))
 
     class ServiceClient(asyncio.Protocol):
         """
@@ -387,6 +265,70 @@ class Server(object):
             if not self.redirectorClientTransport.is_closing():
                 self.redirectorClientTransport.write(data)
 
+    class Iptables(object):
+        """
+        IPTables handling
+        """
+
+        IPTABLES = 'iptables'
+
+        rules = {}
+
+        @classmethod
+        async def call(cls, rule):
+            rule = ('-t', 'nat') + rule
+            creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
+            proc = await creator
+            # Wait for exit, if exit code is 0 then it is successfull
+            return not await proc.wait()
+
+        @classmethod
+        async def addNatRules(cls, clientAddress, cport, shost, sport, phost, pport):
+            dnatRule = (IPTABLES_CHAIN_PREFIX + 'DNAT', '-s', shost, '-d', phost, '-p', 'tcp', '-m', 'tcp',
+                        '--sport', str(sport), '--dport', str(pport), '-j', 'DNAT', '--to-destination', clientAddress)
+            if not await cls.call(('-I',) + dnatRule): return False
+
+            snatRule = (IPTABLES_CHAIN_PREFIX + 'SNAT', '-s', shost, '-p', 'tcp', '-m', 'tcp',
+                        '--sport', str(cport), '--dport', str(sport), '-j', 'SNAT', '--to-source',
+                        phost + ':' + str(pport))
+            if not await cls.call(('-I',) + snatRule): return False
+
+            cls.rules[clientAddress] = (dnatRule, snatRule)
+
+            return True
+
+        @classmethod
+        async def deleteNatRules(cls, clientAddress):
+            try:
+                dnatRule, snatRule = cls.rules[clientAddress]
+                await cls.call(('-D',) + dnatRule)
+                await cls.call(('-D',) + snatRule)
+            except KeyError: pass
+
+        @classmethod
+        async def createChains(cls):
+            # Create chains
+            await cls.call(('-N', IPTABLES_CHAIN_PREFIX + 'DNAT'))
+            await cls.call(('-N', IPTABLES_CHAIN_PREFIX + 'SNAT'))
+            # Create NAT rules
+            await cls.call(('-D', 'OUTPUT', '-j', IPTABLES_CHAIN_PREFIX + 'DNAT'))  # Try deleting 1st
+            await cls.call(('-I', 'OUTPUT', '-j', IPTABLES_CHAIN_PREFIX + 'DNAT'))
+            await cls.call(('-D', 'POSTROUTING', '-j', IPTABLES_CHAIN_PREFIX + 'SNAT'))  # Try deleting 1st
+            await cls.call(('-I', 'POSTROUTING', '-j', IPTABLES_CHAIN_PREFIX + 'SNAT'))
+            # Create RETURN rules
+            await cls.call(('-A', IPTABLES_CHAIN_PREFIX + 'DNAT', '-j', 'RETURN'))
+            await cls.call(('-A', IPTABLES_CHAIN_PREFIX + 'SNAT', '-j', 'RETURN'))
+
+        @classmethod
+        async def deleteChains(cls):
+            await cls.call(('-D', 'OUTPUT', '-j' + IPTABLES_CHAIN_PREFIX + 'DNAT'))
+            await cls.call(('-D', 'POSTROUTING', '-j' + IPTABLES_CHAIN_PREFIX + 'SNAT'))
+            # Flush chains
+            await cls.call(('-F', IPTABLES_CHAIN_PREFIX + 'DNAT'))
+            await cls.call(('-F', IPTABLES_CHAIN_PREFIX + 'SNAT'))
+            # Remove chains
+            await cls.call(('-X', IPTABLES_CHAIN_PREFIX + 'DNAT'))
+            await cls.call(('-X', IPTABLES_CHAIN_PREFIX + 'SNAT'))
 
 
 class Client(object):
@@ -552,8 +494,6 @@ def main():
                         help='If the local port on the redirector client is not the same as the listen port on server '
                              'side, this parameter can replace the remote port sent by client to a new one. '
                              'The old and new port should be separated by comma (e.g. 80.1080)')
-    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 4.',
-                        default=4)
 
     args = parser.parse_args()
 
@@ -566,19 +506,11 @@ def main():
         parser.print_usage()
         exit(2)
 
-    if args.threads and args.threads < 1:
-        print("The worker-thread parameter must be greater than 0!")
-        exit(3)
-    threadCount = args.threads
-
     forwardPorts = args.port
     replacePorts = args.replace
 
     # The event loop
     loop = asyncio.get_event_loop()
-
-    # Process executor
-    loop.set_default_executor(ThreadPoolExecutor(threadCount))
 
     # Signal handler for exiting the loop
     async def shutdown():
