@@ -368,7 +368,7 @@ class Server(object):
             self.redirectorServer = redirectorServer
             self.redirectorClientTransport = redirectorServer.redirectorClientTransport
 
-        def connection_made(self, transport):
+        def connection_made(self, transport: asyncio.Transport):
             self.transport = self.redirectorServer.serviceTransport = transport
             Server.serviceConnections.add(transport)
             # Send buffered data
@@ -383,7 +383,9 @@ class Server(object):
             Server.serviceConnections.remove(self.transport)
 
         def data_received(self, data):
-            self.redirectorClientTransport.write(data)
+            if not self.redirectorClientTransport.is_closing():
+                self.redirectorClientTransport.write(data)
+
 
 
 class Client(object):
