@@ -350,12 +350,12 @@ class Server(object):
         def connection_lost(self, exc):
             if self.serviceTransport is not None:
                 self.serviceTransport.close()
+            try:
+                if self.peerAddress and self.serviceAddress:
+                    print(self.peerAddress, 'disconnected from', self.serviceAddress)
 
-            if self.peerAddress and self.serviceAddress:
-                print(self.peerAddress, 'disconnected from', self.serviceAddress)
-
-            print("Redirector client disconnected from", self.redirectorClientAddress)
-
+                print("Redirector client disconnected from", self.redirectorClientAddress)
+            except BrokenPipeError: pass
             # Delete rules in non blocking way
             asyncio.ensure_future(Server.loop.run_in_executor(None, self.delete_rules))
 
@@ -549,8 +549,8 @@ def main():
                         help='If the local port on the redirector client is not the same as the listen port on server '
                              'side, this parameter can replace the remote port sent by client to a new one. '
                              'The old and new port should be separated by comma (e.g. 80.1080)')
-    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 2.',
-                        default=2)
+    parser.add_argument('-t', '--threads', type=int, help='Starting more worker threads. By default it is 4.',
+                        default=4)
 
     args = parser.parse_args()
 
