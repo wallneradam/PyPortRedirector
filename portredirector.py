@@ -195,7 +195,7 @@ class Server(object):
                 # Create iptables SNAT rule
                 rule = iptc.Rule()
                 rule.protocol = 'tcp'
-                rule.dst = self.shost
+                rule.src = self.shost
                 match = rule.create_match('tcp')
                 match.sport = str(self.cport)
                 match.dport = str(self.sport)
@@ -289,9 +289,9 @@ class Server(object):
                     # Create a socket and get a free port to communicate with
                     try:
                         csock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        csock.bind(('0.0.0.0', 0))
+                        csock.bind((self.shost, 0))
                         self.cport = csock.getsockname()[1]
-                        self.clientAddress = '127.0.0.1:' + str(self.cport)
+                        self.clientAddress = self.shost + ':' + str(self.cport)
                     except socket.error as e:
                         print("Error: ", e, file=sys.stderr)
                         self.redirectorClientTransport.close()
