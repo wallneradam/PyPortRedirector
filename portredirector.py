@@ -314,14 +314,17 @@ class Server(object):
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
-                        # Handle exception
-                        exc = future.exception()
-                        if exc is None:
-                            print(self.peerAddress, 'connected to', self.serviceAddress)
-                        else:
-                            print("Error: Redirecting connection from " + self.peerAddress + ' to ' +
-                                  self.serviceAddress + ":", exc)
-                            # Close client connection
+                        try:
+                            # Handle exception
+                            exc = future.exception()
+                            if exc is None:
+                                print(self.peerAddress, 'connected to', self.serviceAddress)
+                            else:
+                                print("Error: Redirecting connection from " + self.peerAddress + ' to ' +
+                                      self.serviceAddress + ":", exc)
+                                # Close client connection
+                                self.redirectorClientTransport.close()
+                        except BrokenPipeError:
                             self.redirectorClientTransport.close()
 
                     # Create connection to service - we use our own socket to make our snat rule working
