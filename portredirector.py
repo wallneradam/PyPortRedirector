@@ -270,17 +270,25 @@ class Server(object):
         IPTables handling
         """
 
+        # Iptables command
         IPTABLES = 'iptables'
 
+        # Rules by clientAddress
         rules = {}
 
         @classmethod
         async def call(cls, rule):
-            rule = ('-t', 'nat') + rule
-            creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
-            proc = await creator
-            # Wait for exit, if exit code is 0 then it is successfull
-            return not await proc.wait()
+            res = False
+            while not res:
+                rule = ('-t', 'nat') + rule
+                creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
+                proc = await creator
+                # Wait for exit, if exit code is 0 then it is successfull
+                data = await proc.stderr.readline()
+                res = not await proc.wait()
+                # On resource error we need to try again
+                if res or b"esource temporarily unavailable" not in data: break
+            return res
 
         @classmethod
         async def addNatRules(cls, clientAddress, cport, shost, sport, phost, pport):
@@ -293,6 +301,7 @@ class Server(object):
                         phost + ':' + str(pport))
             if not await cls.call(('-I',) + snatRule): return False
 
+            # Store rules for easier delete
             cls.rules[clientAddress] = (dnatRule, snatRule)
 
             return True
@@ -303,6 +312,8 @@ class Server(object):
                 dnatRule, snatRule = cls.rules[clientAddress]
                 await cls.call(('-D',) + dnatRule)
                 await cls.call(('-D',) + snatRule)
+                # Delete from rule cache
+                del cls.rules[clientAddress]
             except KeyError: pass
 
         @classmethod
