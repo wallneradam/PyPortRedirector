@@ -280,14 +280,22 @@ class Server(object):
         async def call(cls, rule):
             res = False
             while not res:
-                rule = ('-t', 'nat') + rule
+                # Add waiting for LOCK_EX, and all our rules are in the "nat" table
+                rule = ('-w', '-t', 'nat') + rule
                 creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
                 proc = await creator
+                # Read error messages
+                error = await proc.stderr.readline()
                 # Wait for exit, if exit code is 0 then it is successfull
-                data = await proc.stderr.readline()
                 res = not await proc.wait()
-                # On resource error we need to try again
-                if res or b"esource temporarily unavailable" not in data: break
+                if not res:
+                    # On resource error we need to try again
+                    if error == b"iptables: Resource temporarily unavailable.\n":
+                        continue
+                    # Expected error
+                    if error != b"iptables: No chain/target/match by that name.\n":
+                        print("Error:", error.rstrip().decode())
+                    break
             return res
 
         @classmethod

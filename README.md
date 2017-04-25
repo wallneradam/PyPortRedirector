@@ -32,14 +32,10 @@ Another solution could be to create an SSH tunnel between the 2 machines. For th
 
 ## Dependencies
 
-- Python > v3.5
-- python-iptables - https://github.com/ldx/python-iptables
+- Python >= v3.5 (works with PyPy3 as well)
 
-### Optional
-
-- uvloop: https://github.com/MagicStack/uvloop
-
-It makes PyPortRedirector even faster. 
+Optional:
+- uvloop: https://github.com/MagicStack/uvloop (it makes PyPortRedirector even faster) 
 
 ## Usage
  
