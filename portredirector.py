@@ -126,13 +126,13 @@ class Server(object):
 
             self.buffer = bytearray()
 
-        async def create_service_connection(self, protocol_factory, sock, host, port):
+        async def create_service_connection(self, protocol_factory, sock):
             """ Create iptables rules and connect to service """
             loop = Server.loop
-            await Server.Iptables.addNatRules(self.clientAddress, self.cport, self.shost, self.sport,
-                                              self.phost, self.pport)
+            await Server.Iptables.addNatRules(self.redirectorClientAddress, self.clientAddress, self.cport,
+                                              self.shost, self.sport, self.phost, self.pport)
             sock.setblocking(False)
-            await loop.sock_connect(sock, (host, port))
+            await loop.sock_connect(sock, (self.shost, self.sport))
             transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
             return transport, protocol
 
@@ -208,7 +208,7 @@ class Server(object):
 
                     # Create connection to service - we use our own socket to make our snat rule working
                     ctask = asyncio.ensure_future(self.create_service_connection(lambda: Server.ServiceClient(self),
-                                                                                 csock, self.shost, self.sport))
+                                                                                 csock), loop=Server.loop)
                     ctask.add_done_callback(cbConnected)
 
                 # Still none?
@@ -222,12 +222,12 @@ class Server(object):
             else:
                 try:
                     self.serviceTransport.write(data)
-                except AttributeError:
-                    pass
+                except AttributeError: pass
 
         def connection_lost(self, exc):
-            if self.serviceTransport is not None:
+            try:
                 self.serviceTransport.close()
+            except AttributeError: pass
             try:
                 if self.peerAddress and self.serviceAddress:
                     print(self.peerAddress, 'disconnected from', self.serviceAddress)
@@ -236,7 +236,7 @@ class Server(object):
             except BrokenPipeError: pass
 
             # Delete rules
-            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.clientAddress))
+            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
 
     class ServiceClient(asyncio.Protocol):
         """
@@ -278,39 +278,44 @@ class Server(object):
 
         @classmethod
         async def call(cls, rule):
-            res = False
-            while not res:
+            while True:
                 # Add waiting for LOCK_EX, and all our rules are in the "nat" table
-                rule = ('-w', '-t', 'nat') + rule
+                rule = ('-t', 'nat') + rule
                 creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
                 proc = await creator
                 # Read error messages
                 error = await proc.stderr.readline()
-                # Wait for exit, if exit code is 0 then it is successfull
-                res = not await proc.wait()
-                if not res:
-                    # On resource error we need to try again
-                    if error == b"iptables: Resource temporarily unavailable.\n":
+                # Wait for exit and get exit code
+                res = await proc.wait()
+                # Handle errors
+                if res:
+                    # On lock (res == 4) or resource error we need to try again
+                    if res == 4 or error == b"iptables: Resource temporarily unavailable.\n":
                         continue
-                    # Expected error
-                    if error != b"iptables: No chain/target/match by that name.\n":
-                        print("Error:", error.rstrip().decode())
-                    break
-            return res
+                    # Expected errors
+                    if res != 1 or (error != b"iptables: No chain/target/match by that name.\n" and
+                                    error != b"iptables: Chain already exists.\n"):
+                        print("Error (" + str(res) + "): " + error.rstrip().decode())
+                # We are done
+                break
+            # if exit code is 0 then it is successfull
+            return not res
 
         @classmethod
-        async def addNatRules(cls, clientAddress, cport, shost, sport, phost, pport):
+        async def addNatRules(cls, redirectorClientAddress, clientAddress, cport, shost, sport, phost, pport):
             dnatRule = (IPTABLES_CHAIN_PREFIX + 'DNAT', '-s', shost, '-d', phost, '-p', 'tcp', '-m', 'tcp',
                         '--sport', str(sport), '--dport', str(pport), '-j', 'DNAT', '--to-destination', clientAddress)
-            if not await cls.call(('-I',) + dnatRule): return False
+            if not await cls.call(('-I',) + dnatRule):
+                return False
 
             snatRule = (IPTABLES_CHAIN_PREFIX + 'SNAT', '-s', shost, '-p', 'tcp', '-m', 'tcp',
                         '--sport', str(cport), '--dport', str(sport), '-j', 'SNAT', '--to-source',
                         phost + ':' + str(pport))
-            if not await cls.call(('-I',) + snatRule): return False
+            if not await cls.call(('-I',) + snatRule):
+                return False
 
             # Store rules for easier delete
-            cls.rules[clientAddress] = (dnatRule, snatRule)
+            cls.rules[redirectorClientAddress] = (dnatRule, snatRule)
 
             return True
 

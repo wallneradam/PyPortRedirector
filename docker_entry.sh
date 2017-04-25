@@ -3,6 +3,8 @@
 server=0;
 interface=""
 
+# TODO: make no require Bash
+
 # Parse params
 _interface=0
 args=()
