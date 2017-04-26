@@ -279,14 +279,14 @@ class Server(object):
         @classmethod
         async def call(cls, rule):
             while True:
-                # Add waiting for LOCK_EX, and all our rules are in the "nat" table
+                # All our rules are in the "nat" table
                 rule = ('-t', 'nat') + rule
                 creator = asyncio.create_subprocess_exec(cls.IPTABLES, *rule, stderr=asyncio.subprocess.PIPE)
                 proc = await creator
-                # Read error messages
-                error = await proc.stderr.readline()
                 # Wait for exit and get exit code
                 res = await proc.wait()
+                # Read error messages
+                error = await proc.stderr.readline()
                 # Handle errors
                 if res:
                     # On lock (res == 4) or resource error we need to try again
