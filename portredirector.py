@@ -193,6 +193,15 @@ class Server(object):
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
+                        # Get the serviceTransport
+                        self.serviceTransport = future.result()[0]
+
+                        # Is the connection still alive?
+                        if self.redirectorClientTransport is None:
+                            # Close the service transport immediately if the client is disconnected
+                            self.serviceTransport.close()
+                            return
+
                         try:
                             # Handle exception
                             exc = future.exception()
@@ -200,7 +209,7 @@ class Server(object):
                                 print(self.peerAddress, 'connected to', self.serviceAddress)
                             else:
                                 print("Error: Redirecting connection from " + self.peerAddress + ' to ' +
-                                      self.serviceAddress + ":", exc)
+                                      self.serviceAddress + ":", exc, file=sys.stderr)
                                 # Close client connection
                                 self.redirectorClientTransport.close()
                         except BrokenPipeError:
@@ -212,22 +221,23 @@ class Server(object):
                     ctask.add_done_callback(cbConnected)
 
                 # Still none?
-                else: self.redirectorClientTransport.close()
+                else:
+                    print("Error: Protocol error!", file=sys.stderr)
+                    self.redirectorClientTransport.close()
 
             # Send data to the service
             elif self.redirectorClientTransport is None:
                 if data is not None: self.buffer.extend(data)
 
-            # Send data
+            # Forward data to service
             else:
                 try:
                     self.serviceTransport.write(data)
                 except AttributeError: pass
 
         def connection_lost(self, exc):
-            try:
-                self.serviceTransport.close()
-            except AttributeError: pass
+            if self.serviceTransport is not None: self.serviceTransport.close()
+
             try:
                 if self.peerAddress and self.serviceAddress:
                     print(self.peerAddress, 'disconnected from', self.serviceAddress)
@@ -235,8 +245,9 @@ class Server(object):
                 print("Redirector client disconnected from", self.redirectorClientAddress)
             except BrokenPipeError: pass
 
-            # Delete rules
-            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
+            # No need transports anymore
+            self.redirectorClientTransport = None
+            self.serviceTransport = None
 
     class ServiceClient(asyncio.Protocol):
         """
@@ -248,20 +259,27 @@ class Server(object):
             self.redirectorClientTransport = redirectorServer.redirectorClientTransport
 
         def connection_made(self, transport: asyncio.Transport):
-            self.transport = self.redirectorServer.serviceTransport = transport
+            self.transport = transport
+            # Add to opened connections
             Server.serviceConnections.add(transport)
-            # Send buffered data
+            # Send buffered data if any
             if len(self.redirectorServer.buffer) > 0:
                 transport.write(self.redirectorServer.buffer)
-                # No longer needed
-                self.redirectorServer.buffer = None
+            # No more buffer is needed
+            self.redirectorServer.buffer = None
 
         def connection_lost(self, exc):
+            # Delete rules
+            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorServer.redirectorClientAddress),
+                                  loop=Server.loop)
+            # Close redirector client conenction
             self.redirectorClientTransport.close()
-            self.redirectorServer = None
+            # Remove service connections
             Server.serviceConnections.remove(self.transport)
+            self.redirectorServer = None
 
         def data_received(self, data):
+            # Forward data to redirector client
             if not self.redirectorClientTransport.is_closing():
                 self.redirectorClientTransport.write(data)
 
@@ -295,7 +313,7 @@ class Server(object):
                     # Expected errors
                     if res != 1 or (error != b"iptables: No chain/target/match by that name.\n" and
                                     error != b"iptables: Chain already exists.\n"):
-                        print("Error (" + str(res) + "): " + error.rstrip().decode())
+                        print("Error (" + str(res) + "): " + error.rstrip().decode(), file=sys.stderr)
                 # We are done
                 break
             # if exit code is 0 then it is successfull
@@ -474,7 +492,8 @@ class Client(object):
                 if exc is None:
                     print(peerAddress, 'connected to', listenAddress)
                 else:
-                    print("Error: Redirecting connection from " + peerAddress + ' to ' + listenAddress + " was failed!")
+                    print("Error: Redirecting connection from " + peerAddress + ' to ' + listenAddress + " was failed!",
+                          file=sys.stderr)
                     # Close client connection
                     peerTransport.close()
 
