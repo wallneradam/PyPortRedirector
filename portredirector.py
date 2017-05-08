@@ -206,7 +206,7 @@ class Server(object):
                             # Handle exception
                             exc = future.exception()
                             if exc is None:
-                                print(self.peerAddress + '(' + self.redirectorClientAddress + ')', 'connected to',
+                                print(self.peerAddress + ' (' + self.redirectorClientAddress + ')', 'connected to',
                                       self.serviceAddress)
                             else:
                                 print("Error: Redirecting connection from " + self.peerAddress + ' (' +
@@ -234,15 +234,20 @@ class Server(object):
             # Forward data to service
             else:
                 try:
-                    self.serviceTransport.write(data)
+                    if not self.serviceTransport.is_closing():
+                        self.serviceTransport.write(data)
                 except AttributeError: pass
 
         def connection_lost(self, exc):
+            # Delete rules
+            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
+
+            # Close service connection (if not already closed)
             if self.serviceTransport is not None: self.serviceTransport.close()
 
             try:
                 if self.peerAddress and self.serviceAddress:
-                    print(self.peerAddress + '(' + self.redirectorClientAddress + ')',
+                    print(self.peerAddress + ' (' + self.redirectorClientAddress + ')',
                           'disconnected from', self.serviceAddress)
 
                 print("Redirector client disconnected from", self.redirectorClientAddress)
@@ -272,9 +277,6 @@ class Server(object):
             self.redirectorServer.buffer = None
 
         def connection_lost(self, exc):
-            # Delete rules
-            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorServer.redirectorClientAddress),
-                                  loop=Server.loop)
             # Close redirector client conenction
             self.redirectorClientTransport.close()
             # Remove service connections
@@ -348,6 +350,7 @@ class Server(object):
                 await cls.call(('-D',) + snatRule)
                 # Delete from rule cache
                 del cls.rules[clientAddress]
+            # If the address is not in the list of rules
             except KeyError: pass
 
         @classmethod
