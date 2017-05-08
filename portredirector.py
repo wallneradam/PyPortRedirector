@@ -206,9 +206,11 @@ class Server(object):
                             # Handle exception
                             exc = future.exception()
                             if exc is None:
-                                print(self.peerAddress, 'connected to', self.serviceAddress)
+                                print(self.peerAddress + '(' + self.redirectorClientAddress + ')', 'connected to',
+                                      self.serviceAddress)
                             else:
-                                print("Error: Redirecting connection from " + self.peerAddress + ' to ' +
+                                print("Error: Redirecting connection from " + self.peerAddress + ' (' +
+                                      self.redirectorClientAddress + ') to ' +
                                       self.serviceAddress + ":", exc, file=sys.stderr)
                                 # Close client connection
                                 self.redirectorClientTransport.close()
@@ -240,7 +242,8 @@ class Server(object):
 
             try:
                 if self.peerAddress and self.serviceAddress:
-                    print(self.peerAddress, 'disconnected from', self.serviceAddress)
+                    print(self.peerAddress + '(' + self.redirectorClientAddress + ')',
+                          'disconnected from', self.serviceAddress)
 
                 print("Redirector client disconnected from", self.redirectorClientAddress)
             except BrokenPipeError: pass
