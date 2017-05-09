@@ -193,19 +193,19 @@ class Server(object):
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
-                        # Get the serviceTransport
-                        self.serviceTransport = future.result()[0]
-
-                        # Is the connection still alive?
-                        if self.redirectorClientTransport is None:
-                            # Close the service transport immediately if the client is disconnected
-                            self.serviceTransport.close()
-                            return
-
                         try:
                             # Handle exception
                             exc = future.exception()
                             if exc is None:
+                                # Get the serviceTransport
+                                self.serviceTransport = future.result()[0]
+
+                                # Is the connection still alive?
+                                if self.redirectorClientTransport is None:
+                                    # Close the service transport immediately if the client is disconnected
+                                    self.serviceTransport.close()
+                                    return
+
                                 print(self.peerAddress + ' (' + self.redirectorClientAddress + ')', 'connected to',
                                       self.serviceAddress)
                             else:
@@ -246,7 +246,7 @@ class Server(object):
             if self.serviceTransport is not None: self.serviceTransport.close()
 
             try:
-                if self.peerAddress and self.serviceAddress:
+                if self.serviceTransport and self.peerAddress and self.serviceAddress:
                     print(self.peerAddress + ' (' + self.redirectorClientAddress + ')',
                           'disconnected from', self.serviceAddress)
 
@@ -275,17 +275,19 @@ class Server(object):
                 transport.write(self.redirectorServer.buffer)
             # No more buffer is needed
             self.redirectorServer.buffer = None
+            self.redirectorServer = None
 
         def connection_lost(self, exc):
             # Close redirector client conenction
-            self.redirectorClientTransport.close()
+            # NOTE: it is possible to not have redirectorClientTransport if it is closed in the meantime
+            if self.redirectorClientTransport:
+                self.redirectorClientTransport.close()
             # Remove service connections
             Server.serviceConnections.remove(self.transport)
-            self.redirectorServer = None
 
         def data_received(self, data):
             # Forward data to redirector client
-            if not self.redirectorClientTransport.is_closing():
+            if self.redirectorClientTransport and not self.redirectorClientTransport.is_closing():
                 self.redirectorClientTransport.write(data)
 
     class Iptables(object):
