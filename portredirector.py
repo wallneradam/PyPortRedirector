@@ -26,7 +26,7 @@ __author__ = "Adam Wallner"
 __copyright__ = "Copyright 2017, Adam Wallner"
 __credits__ = []
 __license__ = "GPLv3"
-__version__ = "0.1"
+__version__ = "0.2.5"
 __maintainer__ = "Adam Wallner"
 __email__ = "adam.wallner@gmail.com"
 __status__ = "Beta"
@@ -81,7 +81,7 @@ class Server(object):
         server = loop.run_until_complete(make_server)
 
         peerAddress = lhost + ':' + str(lport)
-        print('Waiting for redirector client connections on {}...'.format(peerAddress))
+        print('Waiting for redirector client connections on {}…'.format(peerAddress))
 
         # Waiting until an end signal
         loop.run_forever()
@@ -118,8 +118,8 @@ class Server(object):
             self.peerAddress = None
 
             # This is the client address (bind for SNAT)
-            self.cport = None
-            self.clientAddress = None
+            self.scport = None
+            self.serviceClientAddress = None
 
             self.snatRule = None
             self.dnatRule = None
@@ -128,13 +128,16 @@ class Server(object):
 
         async def create_service_connection(self, protocol_factory, sock):
             """ Create iptables rules and connect to service """
-            loop = Server.loop
-            await Server.Iptables.addNatRules(self.redirectorClientAddress, self.clientAddress, self.cport,
-                                              self.shost, self.sport, self.phost, self.pport)
-            sock.setblocking(False)
-            await loop.sock_connect(sock, (self.shost, self.sport))
-            transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
-            return transport, protocol
+            # Check if we still have the redirector connection
+            if self.redirectorClientTransport:
+                loop = Server.loop
+                await Server.Iptables.addNatRules(self.redirectorClientAddress, self.serviceClientAddress, self.scport,
+                                                  self.shost, self.sport, self.phost, self.pport)
+                sock.setblocking(False)
+                await loop.sock_connect(sock, (self.shost, self.sport))
+                transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
+                return transport, protocol
+            return None, None
 
         def connection_made(self, redirectorClientTransport):
             try:
@@ -184,12 +187,14 @@ class Server(object):
                     try:
                         csock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         csock.bind((self.shost, 0))
-                        self.cport = csock.getsockname()[1]
-                        self.clientAddress = self.shost + ':' + str(self.cport)
+                        self.scport = csock.getsockname()[1]
+                        self.serviceClientAddress = self.shost + ':' + str(self.scport)
                     except socket.error as e:
                         print("Error: ", e, file=sys.stderr)
                         self.redirectorClientTransport.close()
                         return
+
+                    print(self.peerAddress, "connecting through", self.redirectorClientAddress + '…')
 
                     # Connected callback
                     def cbConnected(future: asyncio.Future):
@@ -203,7 +208,8 @@ class Server(object):
                                 # Is the connection still alive?
                                 if self.redirectorClientTransport is None:
                                     # Close the service transport immediately if the client is disconnected
-                                    self.serviceTransport.close()
+                                    if self.serviceTransport is not None:
+                                        self.serviceTransport.close()
                                     return
 
                                 print(self.peerAddress + ' (' + self.redirectorClientAddress + ')', 'connected to',
@@ -247,7 +253,7 @@ class Server(object):
 
             try:
                 if self.serviceTransport and self.peerAddress and self.serviceAddress:
-                    print(self.peerAddress + ' (' + self.redirectorClientAddress + ')',
+                    print(self.peerAddress + ' through ' + self.redirectorClientAddress + ' ',
                           'disconnected from', self.serviceAddress)
 
                 print("Redirector client disconnected from", self.redirectorClientAddress)
@@ -298,7 +304,7 @@ class Server(object):
         # Iptables command
         IPTABLES = 'iptables'
 
-        # Rules by clientAddress
+        # Rules by redirectorClientAddress
         rules = {}
 
         @classmethod
@@ -415,7 +421,7 @@ class Client(object):
                 server = loop.run_until_complete(make_server)
 
                 listenAddress = forwardHost + ':' + str(forwardPort)
-                print('Waiting for client connections on {}...'.format(listenAddress))
+                print('Waiting for client connections on {}…'.format(listenAddress))
 
                 Client.servers.append(server)
 
@@ -566,7 +572,7 @@ def main():
     # Signal handler for exiting the loop
     async def shutdown():
         print("\b\b", end='')  # Remove ^C from command line
-        print("Shutting down...")
+        print("Shutting down…")
         asyncio.get_event_loop().stop()
 
     # Add signal handlers
@@ -583,7 +589,7 @@ def main():
                 port = int(args.listen)
             Server.createServer(host, port, forwardPorts, replacePorts)
         except ValueError:
-            print("Wrong listen address format! It should be like 0.0.0.0:1234...", file=sys.stderr)
+            print("Wrong listen address format! It should be like 0.0.0.0:1234…", file=sys.stderr)
             parser.print_usage()
             exit(4)
     else:
@@ -591,7 +597,7 @@ def main():
             host, port = args.connect.split(":")
             Client.createClient(host, port, forwardPorts)
         except ValueError:
-            print("Wrong address format! It should be like 0.0.0.0:1234...", file=sys.stderr)
+            print("Wrong address format! It should be like 0.0.0.0:1234…", file=sys.stderr)
             parser.print_usage()
             exit(5)
 
