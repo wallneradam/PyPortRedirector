@@ -26,7 +26,7 @@ __author__ = "Adam Wallner"
 __copyright__ = "Copyright 2017, Adam Wallner"
 __credits__ = []
 __license__ = "GPLv3"
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 __maintainer__ = "Adam Wallner"
 __email__ = "adam.wallner@gmail.com"
 __status__ = "Beta"
@@ -128,16 +128,17 @@ class Server(object):
 
         async def create_service_connection(self, protocol_factory, sock):
             """ Create iptables rules and connect to service """
-            # Check if we still have the redirector connection
-            if self.redirectorClientTransport:
-                loop = Server.loop
-                await Server.Iptables.addNatRules(self.redirectorClientAddress, self.serviceClientAddress, self.scport,
-                                                  self.shost, self.sport, self.phost, self.pport)
-                sock.setblocking(False)
-                await loop.sock_connect(sock, (self.shost, self.sport))
-                transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
-                return transport, protocol
-            return None, None
+            if not self.redirectorClientTransport:
+                return None, None  # Exit if already disconnected
+            loop = Server.loop
+            res = await Server.Iptables.addNatRules(self.redirectorClientAddress, self.serviceClientAddress,
+                                                    self.scport, self.shost, self.sport, self.phost, self.pport)
+            if res != 0 or not self.redirectorClientTransport:
+                return None, None  # Exit if not connected or no rules
+            sock.setblocking(False)
+            await loop.sock_connect(sock, (self.shost, self.sport))
+            transport, protocol = await loop.create_connection(protocol_factory, sock=sock)
+            return transport, protocol
 
         def connection_made(self, redirectorClientTransport):
             try:
@@ -206,11 +207,11 @@ class Server(object):
                                 self.serviceTransport = future.result()[0]
 
                                 # Is the connection still alive?
-                                if self.redirectorClientTransport is None:
-                                    # Close the service transport immediately if the client is disconnected
-                                    if self.serviceTransport is not None:
-                                        self.serviceTransport.close()
-                                    return
+                                if not self.redirectorClientTransport:
+                                    print('Error: client connection (' + self.redirectorClientAddress +
+                                          ') closed before service connection (' + self.peerAddress + ')',
+                                          file=sys.stderr)
+                                    raise ConnectionError()
 
                                 print(self.peerAddress + ' (' + self.redirectorClientAddress + ')', 'connected to',
                                       self.serviceAddress)
@@ -219,9 +220,18 @@ class Server(object):
                                       self.redirectorClientAddress + ') to ' +
                                       self.serviceAddress + ":", exc, file=sys.stderr)
                                 # Close client connection
+                                raise ConnectionError()
+
+                        except (ConnectionError, BrokenPipeError):
+                            # Check if we have iptables rules
+                            if Server.Iptables.hasNatRule(self.redirectorClientAddress):
+                                # Delete iptables rules
+                                asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress),
+                                                      loop=Server.loop)
+                            if self.redirectorClientTransport:
                                 self.redirectorClientTransport.close()
-                        except BrokenPipeError:
-                            self.redirectorClientTransport.close()
+                            if self.serviceTransport:
+                                self.serviceTransport.close()
 
                     # Create connection to service - we use our own socket to make our snat rule working
                     ctask = asyncio.ensure_future(self.create_service_connection(lambda: Server.ServiceClient(self),
@@ -234,7 +244,7 @@ class Server(object):
                     self.redirectorClientTransport.close()
 
             # Send data to the service
-            elif self.redirectorClientTransport is None:
+            elif not self.redirectorClientTransport:
                 if data is not None: self.buffer.extend(data)
 
             # Forward data to service
@@ -245,15 +255,18 @@ class Server(object):
                 except AttributeError: pass
 
         def connection_lost(self, exc):
-            # Delete rules
-            asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
-
             # Close service connection (if not already closed)
-            if self.serviceTransport is not None: self.serviceTransport.close()
+            if self.serviceTransport is not None:
+                self.serviceTransport.close()
+
+            # Check if we already have iptables rules
+            if Server.Iptables.hasNatRule(self.redirectorClientAddress):
+                # Remove rules
+                asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
 
             try:
                 if self.serviceTransport and self.peerAddress and self.serviceAddress:
-                    print(self.peerAddress + ' through ' + self.redirectorClientAddress + ' ',
+                    print(self.peerAddress + ' through ' + self.redirectorClientAddress,
                           'disconnected from', self.serviceAddress)
 
                 print("Redirector client disconnected from", self.redirectorClientAddress)
@@ -329,35 +342,40 @@ class Server(object):
                         print("Error (" + str(res) + "): " + error.rstrip().decode(), file=sys.stderr)
                 # We are done
                 break
-            # if exit code is 0 then it is successfull
-            return not res
+            return res
+
+        @classmethod
+        def hasNatRule(cls, redirectorClientAddress):
+            return redirectorClientAddress in cls.rules
 
         @classmethod
         async def addNatRules(cls, redirectorClientAddress, clientAddress, cport, shost, sport, phost, pport):
             dnatRule = (IPTABLES_CHAIN_PREFIX + 'DNAT', '-s', shost, '-d', phost, '-p', 'tcp', '-m', 'tcp',
                         '--sport', str(sport), '--dport', str(pport), '-j', 'DNAT', '--to-destination', clientAddress)
-            if not await cls.call(('-I',) + dnatRule):
-                return False
+            res = await cls.call(('-I',) + dnatRule)
 
-            snatRule = (IPTABLES_CHAIN_PREFIX + 'SNAT', '-s', shost, '-p', 'tcp', '-m', 'tcp',
-                        '--sport', str(cport), '--dport', str(sport), '-j', 'SNAT', '--to-source',
-                        phost + ':' + str(pport))
-            if not await cls.call(('-I',) + snatRule):
-                return False
+            if res == 0:
+                snatRule = (IPTABLES_CHAIN_PREFIX + 'SNAT', '-s', shost, '-p', 'tcp', '-m', 'tcp',
+                            '--sport', str(cport), '--dport', str(sport), '-j', 'SNAT', '--to-source',
+                            phost + ':' + str(pport))
+                res = await cls.call(('-I',) + snatRule)
 
-            # Store rules for easier delete
-            cls.rules[redirectorClientAddress] = (dnatRule, snatRule)
+                cls.rules[redirectorClientAddress] = (dnatRule, snatRule)
+                if res != 0:
+                    cls.deleteNatRules(redirectorClientAddress)
 
-            return True
+            return res
 
         @classmethod
-        async def deleteNatRules(cls, clientAddress):
+        async def deleteNatRules(cls, redirectorClientAddress):
             try:
-                dnatRule, snatRule = cls.rules[clientAddress]
+                dnatRule, snatRule = cls.rules[redirectorClientAddress]
                 await cls.call(('-D',) + dnatRule)
                 await cls.call(('-D',) + snatRule)
+
                 # Delete from rule cache
-                del cls.rules[clientAddress]
+                del cls.rules[redirectorClientAddress]
+
             # If the address is not in the list of rules
             except KeyError: pass
 

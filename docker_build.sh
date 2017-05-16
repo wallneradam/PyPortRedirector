@@ -1,7 +1,7 @@
 #!/bin/bash
 
 NAME="pickapp/pyportredirector"
-VERSION=0.2.5
+VERSION=`cat ./portredirector.py | grep "__version__" | cut -d '"' -f2`
 
 [ "$1" == "pypy" ] && VERSION="$VERSION-pypy"
 
