@@ -26,10 +26,10 @@ __author__ = "Adam Wallner"
 __copyright__ = "Copyright 2017, Adam Wallner"
 __credits__ = []
 __license__ = "GPLv3"
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 __maintainer__ = "Adam Wallner"
 __email__ = "adam.wallner@gmail.com"
-__status__ = "Beta"
+__status__ = "Production"
 
 
 # The name of redirector iptables chain
