@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -u
+#!/usr/bin/python3 -u -OO
 # -*- coding: utf-8 -*-
 
 import sys
@@ -142,6 +142,8 @@ class Server(object):
 
         def connection_made(self, redirectorClientTransport):
             try:
+                # Solves backpressure effect
+                redirectorClientTransport.set_write_buffer_limits(0)
                 self.redirectorClientTransport = redirectorClientTransport
                 peername = redirectorClientTransport.get_extra_info('peername')
                 self.redirectorClientAddress = peername[0] + ':' + str(peername[1])
@@ -285,7 +287,9 @@ class Server(object):
             self.redirectorServer = redirectorServer
             self.redirectorClientTransport = redirectorServer.redirectorClientTransport
 
-        def connection_made(self, transport: asyncio.Transport):
+        def connection_made(self, transport):
+            # Solves backpressure effect
+            transport.set_write_buffer_limits(0)
             self.transport = transport
             # Add to opened connections
             Server.serviceConnections.add(transport)
@@ -476,6 +480,8 @@ class Client(object):
             self.peerTransport = peerServer.peerTransport
 
         def connection_made(self, redirectorTransport):
+            # Solves backpressure effect
+            redirectorTransport.set_write_buffer_limits(0)
             # Send peer info to the redirector server as 1st message
             redirectorTransport.write(str.encode(self.peerServer.peerAddress + ':' + self.peerServer.lport + "\n"))
             # Now we can accept data from peers
@@ -507,7 +513,9 @@ class Client(object):
             self.listenAddress = None
             self.buffer = bytearray()
 
-        def connection_made(self, peerTransport: asyncio.BaseTransport):
+        def connection_made(self, peerTransport):
+            # Solves backpressure effect
+            peerTransport.set_write_buffer_limits(0)
             self.peerTransport = peerTransport
             peername = peerTransport.get_extra_info('peername')
             sockname = peerTransport.get_extra_info('sockname')
@@ -594,7 +602,7 @@ def main():
         asyncio.get_event_loop().stop()
 
     # Add signal handlers
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGABRT):
         loop.add_signal_handler(sig, lambda: asyncio.ensure_future(shutdown()))
 
     # Start client or server based on listen or connect arguments

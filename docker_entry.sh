@@ -32,4 +32,4 @@ if [ ${server} -ne 0 ]; then
     [ "$interface" != "" ] && eval "echo -n 1 >/proc/sys/net/ipv4/conf/${interface}/route_localnet"
 fi
 
-exec /usr/local/bin/python3 -u /opt/portredirector.py ${args[@]}
+exec /usr/local/bin/python3 -u -OO /opt/portredirector.py ${args[@]}
