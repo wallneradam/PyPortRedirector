@@ -1,9 +1,10 @@
-#!/usr/bin/python3 -u -OO
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import sys
 import argparse
 import asyncio
+import async_timeout
 import socket
 import signal
 
@@ -26,7 +27,7 @@ __author__ = "Adam Wallner"
 __copyright__ = "Copyright 2017, Adam Wallner"
 __credits__ = []
 __license__ = "GPLv3"
-__version__ = "0.2.7"
+__version__ = "0.3"
 __maintainer__ = "Adam Wallner"
 __email__ = "adam.wallner@gmail.com"
 __status__ = "Production"
@@ -34,6 +35,17 @@ __status__ = "Production"
 
 # The name of redirector iptables chain
 IPTABLES_CHAIN_PREFIX = 'PYPORTREDIRECT_'
+
+# Timeouts
+CONNECT_TIMEOUT = 15  # sec
+READ_TIMEOUT = 120  # sec
+
+# Socket read size
+READ_SIZE = 65536
+
+
+def error(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 class Server(object):
@@ -70,7 +82,7 @@ class Server(object):
                     Server.replacePorts[int(rport[0])] = int(rport[1])
 
         except ValueError:
-            print("Port numbers must be integer!", file=sys.stderr)
+            error("Port numbers must be integer!")
             return
 
         # Initialize iptables
@@ -178,10 +190,10 @@ class Server(object):
                     self.serviceAddress = self.shost + ':' + str(self.sport)
 
                 except ValueError:
-                    print("Error: Protocol error!", file=sys.stderr)
+                    error("Error: Protocol error!")
 
                 except KeyError:
-                    print("Error: No service on the specified port: {!r}".format(data), file=sys.stderr)
+                    error("Error: No service on the specified port: {!r}".format(data))
 
                 # Here we know the peer address and port and the destination port as well so we can create the iptables
                 # rules and connect to
@@ -193,7 +205,7 @@ class Server(object):
                         self.scport = csock.getsockname()[1]
                         self.serviceClientAddress = self.shost + ':' + str(self.scport)
                     except socket.error as e:
-                        print("Error: ", e, file=sys.stderr)
+                        error("Error: ", e)
                         self.redirectorClientTransport.close()
                         return
 
@@ -210,17 +222,16 @@ class Server(object):
 
                                 # Is the connection still alive?
                                 if not self.redirectorClientTransport:
-                                    print('Error: client connection (' + self.redirectorClientAddress +
-                                          ') closed before service connection (' + self.peerAddress + ')',
-                                          file=sys.stderr)
+                                    error('Error: client connection (' + self.redirectorClientAddress +
+                                          ') closed before service connection (' + self.peerAddress + ')')
                                     raise ConnectionError()
 
                                 print(self.peerAddress + ' (' + self.redirectorClientAddress + ')', 'connected to',
                                       self.serviceAddress)
                             else:
-                                print("Error: Redirecting connection from " + self.peerAddress + ' (' +
+                                error("Error: Redirecting connection from " + self.peerAddress + ' (' +
                                       self.redirectorClientAddress + ') to ' +
-                                      self.serviceAddress + ":", exc, file=sys.stderr)
+                                      self.serviceAddress + ":", exc)
                                 # Close client connection
                                 raise ConnectionError()
 
@@ -242,7 +253,7 @@ class Server(object):
 
                 # Still none?
                 else:
-                    print("Error: Protocol error!", file=sys.stderr)
+                    error("Error: Protocol error!")
                     self.redirectorClientTransport.close()
 
             # Send data to the service
@@ -257,14 +268,14 @@ class Server(object):
                 except AttributeError: pass
 
         def connection_lost(self, exc):
-            # Close service connection (if not already closed)
-            if self.serviceTransport is not None:
-                self.serviceTransport.close()
-
             # Check if we already have iptables rules
             if Server.Iptables.hasNatRule(self.redirectorClientAddress):
                 # Remove rules
                 asyncio.ensure_future(Server.Iptables.deleteNatRules(self.redirectorClientAddress), loop=Server.loop)
+
+            # Close service connection (if not already closed)
+            if self.serviceTransport is not None:
+                self.serviceTransport.close()
 
             try:
                 if self.serviceTransport and self.peerAddress and self.serviceAddress:
@@ -334,16 +345,16 @@ class Server(object):
                 # Wait for exit and get exit code
                 res = await proc.wait()
                 # Read error messages
-                error = await proc.stderr.readline()
+                err = await proc.stderr.readline()
                 # Handle errors
                 if res:
                     # On lock (res == 4) or resource error we need to try again
-                    if res == 4 or error == b"iptables: Resource temporarily unavailable.\n":
+                    if res == 4 or err == b"iptables: Resource temporarily unavailable.\n":
                         continue
                     # Expected errors
-                    if res != 1 or (error != b"iptables: No chain/target/match by that name.\n" and
-                                    error != b"iptables: Chain already exists.\n"):
-                        print("Error (" + str(res) + "): " + error.rstrip().decode(), file=sys.stderr)
+                    if res != 1 or (err != b"iptables: No chain/target/match by that name.\n" and
+                                    err != b"iptables: Chain already exists.\n"):
+                        error("Error (" + str(res) + "): " + err.rstrip().decode())
                 # We are done
                 break
             return res
@@ -413,24 +424,16 @@ class Client(object):
     """
     Client accepting and forwarding connections and data to the server
     """
-    servers = []
-    redirectorClientConnections = set()
 
-    redirectorServerHost = None
-    redirectorServerPort = None
-    redirectorServerAddress = None
+    def __init__(self, host: str, port: int, redirectingPorts: list, loop=None):
+        self.loop = loop or asyncio.get_event_loop()
 
-    loop = None
-
-    @classmethod
-    def createClient(cls, host, port, redirectingPorts):
-        loop = asyncio.get_event_loop()
-        Client.loop = loop
+        servers = []
 
         try:
-            Client.redirectorServerHost = host
-            Client.redirectorServerPort = int(port)
-            Client.redirectorServerAddress = host + ':' + str(port)
+            self.redirectorServerHost = host
+            self.redirectorServerPort = int(port)
+            self.redirectorServerAddress = host + ':' + str(port)
 
             # Create listen sockets for forwarding ports
             for forwardPort in redirectingPorts:
@@ -439,124 +442,127 @@ class Client(object):
                 else:
                     forwardHost = '0.0.0.0'
 
-                make_server = loop.create_server(Client.PeerServer, forwardHost, int(forwardPort), reuse_port=True)
-                server = loop.run_until_complete(make_server)
+                make_server = asyncio.start_server(self.accept_connection, forwardHost, int(forwardPort),
+                                                   reuse_address=True, reuse_port=True, loop=self.loop)
+                server = self.loop.run_until_complete(make_server)
 
                 listenAddress = forwardHost + ':' + str(forwardPort)
                 print('Waiting for client connections on {}…'.format(listenAddress))
 
-                Client.servers.append(server)
+                servers.append(server)
 
             # Waiting until an end signal
-            loop.run_forever()
+            self.loop.run_forever()
 
             # Tasks for closing connections
             closeTasks = []
 
             # Close server connections
-            for server in Client.servers:
+            for server in servers:
                 server.close()
                 closeTasks.append(server.wait_closed())
 
-            # Close client connections
-            for redirectorClient in Client.redirectorClientConnections:
-                redirectorClient.close()
-
-            loop.run_until_complete(asyncio.wait(closeTasks))
+            self.loop.run_until_complete(asyncio.wait(closeTasks))
 
         except RuntimeError:
             pass
 
         # Close the loop
-        loop.close()
+        self.loop.close()
 
-    class RedirectorClient(asyncio.Protocol):
-        """
-        Connect to redirector server
-        """
-        def __init__(self, peerServer):
-            self.transport = None
-            self.peerServer = peerServer
-            self.peerTransport = peerServer.peerTransport
+    async def accept_connection(self, peerReader: asyncio.StreamReader, peerWriter: asyncio.StreamWriter):
+        """ Accepts client connections """
+        redirectorReader = redirectorWriter = None
+        tasks = []
+        try:
+            # fix buffering issues
+            peerWriter.transport.set_write_buffer_limits(0)
+            peername = peerWriter.get_extra_info('peername')
+            sockname = peerWriter.get_extra_info('sockname')
 
-        def connection_made(self, redirectorTransport):
-            # Solves backpressure effect
-            redirectorTransport.set_write_buffer_limits(0)
-            # Send peer info to the redirector server as 1st message
-            redirectorTransport.write(str.encode(self.peerServer.peerAddress + ':' + self.peerServer.lport + "\n"))
-            # Now we can accept data from peers
-            self.transport = self.peerServer.redirectorTransport = redirectorTransport
-            Client.redirectorClientConnections.add(redirectorTransport)
-            # Send buffered data
-            if len(self.peerServer.buffer) > 0:
-                redirectorTransport.write(self.peerServer.buffer)
-            # No need the buffer anymore
-            self.peerServer.buffer = None
-
-        def data_received(self, data):
-            self.peerTransport.write(data)
-
-        def connection_lost(self, exc):
-            self.peerTransport.close()
-            self.peerServer = None
-            Client.redirectorClientConnections.remove(self.transport)
-
-    class PeerServer(asyncio.Protocol):
-        """
-        Accept connections on the service ports and transfer data through the client
-        """
-        def __init__(self):
-            self.peerTransport = None
-            self.redirectorTransport = None
-            self.peerAddress = None
-            self.lport = None
-            self.listenAddress = None
-            self.buffer = bytearray()
-
-        def connection_made(self, peerTransport):
-            # Solves backpressure effect
-            peerTransport.set_write_buffer_limits(0)
-            self.peerTransport = peerTransport
-            peername = peerTransport.get_extra_info('peername')
-            sockname = peerTransport.get_extra_info('sockname')
             peerAddress = peername[0] + ':' + str(peername[1])
-            self.lport = str(sockname[1])
-            listenAddress = sockname[0] + ':' + self.lport
-            self.peerAddress = peerAddress
-            self.listenAddress = listenAddress
+            listenPort = str(sockname[1])
+            listenAddress = sockname[0] + ':' + listenPort
 
-            # Connected callback
-            def cbConnected(future: asyncio.Future):
-                # Handle exception
-                exc = future.exception()
-                if exc is None:
-                    print(peerAddress, 'connected to', listenAddress)
-                else:
-                    print("Error: Redirecting connection from " + peerAddress + ' to ' + listenAddress + " was failed!",
-                          file=sys.stderr)
-                    # Close client connection
-                    peerTransport.close()
+            print("Peer", peerAddress, 'connected to', listenAddress)
 
-            # Create connection to redirector server
-            ctask = asyncio.ensure_future(Client.loop.create_connection(
-                lambda: Client.RedirectorClient(self),
-                Client.redirectorServerHost, Client.redirectorServerPort))
-            ctask.add_done_callback(cbConnected)
+            # Connect to redirector server
+            try:
+                with async_timeout.timeout(timeout=CONNECT_TIMEOUT, loop=self.loop):
+                    try:
+                        redirectorReader, redirectorWriter = await asyncio.open_connection(self.redirectorServerHost,
+                                                                                           self.redirectorServerPort,
+                                                                                           ssl=False)
+                        # Send peer info to the redirector server as 1st message
+                        redirectorWriter.write(str.encode(peerAddress + ':' + listenPort + "\n"))
 
-        def connection_lost(self, exc):
-            self.peerTransport.close()
-            if self.redirectorTransport is not None:
-                self.redirectorTransport.close()
-            print(self.peerAddress, 'disconnected from', self.listenAddress)
+                    except (ConnectionError, BrokenPipeError, GeneratorExit, OSError):
+                        error("Error: Redirecting connection from " + peerAddress + ' to ' +
+                              listenAddress + " was failed!")
 
-        def data_received(self, data):
-            # If no server connection is ready, we store data into a buffer
-            if self.redirectorTransport is None:
-                self.buffer.extend(data)
+            except asyncio.TimeoutError:
+                error("Error: Redirecting connection from " + peerAddress + ' to ' + listenAddress +
+                      " was failed because of timeout!")
 
-            # Send data
-            else:
-                self.redirectorTransport.write(data)
+            if not redirectorReader or not redirectorWriter: return
+            print("Peer", peerAddress, 'redirected to', self.redirectorServerAddress)
+
+            async def relayStream(reader, writer, otherWriter):
+                """ Transfer data from reader to writer """
+                try:
+                    while True:
+                        # Stop if no data has received in time
+                        with async_timeout.timeout(READ_TIMEOUT):
+                            try:
+                                await writer.drain()
+                                data = await reader.read(READ_SIZE)
+                                l = len(data)
+                                if l == 0:  # EOF
+                                    if not otherWriter.transport.is_closing():
+                                        if reader == peerReader:
+                                            print('Peer', peerAddress, 'has closed connection to',
+                                                  self.redirectorServerAddress)
+                                        else:
+                                            print("Redirector", self.redirectorServerAddress,
+                                                  'has closed connection from', peerAddress)
+                                    break
+                                writer.write(data)
+                            except (ConnectionError, BrokenPipeError):
+                                if reader == peerReader:
+                                    error('Peer', peerAddress, 'has disconnected from', self.redirectorServerAddress)
+                                else:
+                                    error("Redirector", self.redirectorServerAddress,
+                                          'has disconnected from', peerAddress)
+                                break
+                except OSError as e:
+                    error("Error: OS error:", str(e))
+                except asyncio.TimeoutError:
+                    error("Read timeout occured. Closing connection.")
+                except asyncio.CancelledError:
+                    pass
+
+                # Close connection
+                if not writer.transport.is_closing():
+                    await writer.drain()
+                    writer.close()
+                    # To let the socket actually close
+                    await asyncio.sleep(0, loop=self.loop)
+
+            # Create relay tasks
+            tasks = [
+                asyncio.ensure_future(relayStream(peerReader, redirectorWriter, peerWriter), loop=self.loop),
+                asyncio.ensure_future(relayStream(redirectorReader, peerWriter, redirectorWriter), loop=self.loop)
+            ]
+
+            # Stop waiting when any connection endpoint has closed
+            done, pending = await asyncio.wait(tasks, loop=self.loop, return_when=asyncio.FIRST_COMPLETED)
+            # Cancel remaining task
+            for task in pending: task.cancel()
+            # Wait for cancel
+            if pending: await asyncio.wait(pending, loop=self.loop, timeout=1)
+
+        except asyncio.CancelledError:
+            for task in tasks: task.cancel()
 
 
 def main():
@@ -585,7 +591,7 @@ def main():
         exit(1)
 
     if args.listen and args.connect:
-        print("Either client or server must be selected, not both!", file=sys.stderr)
+        error("Either client or server must be selected, not both!")
         parser.print_usage()
         exit(2)
 
@@ -606,7 +612,7 @@ def main():
         loop.add_signal_handler(sig, lambda: asyncio.ensure_future(shutdown()))
 
     # Start client or server based on listen or connect arguments
-    if args.listen:
+    if args.listen:  # Server
         try:
             if ':' in args.listen:
                 host, port = args.listen.split(":")
@@ -615,17 +621,17 @@ def main():
                 port = int(args.listen)
             Server.createServer(host, port, forwardPorts, replacePorts)
         except ValueError:
-            print("Wrong listen address format! It should be like 0.0.0.0:1234…", file=sys.stderr)
+            error("Wrong listen address format! It should be like 0.0.0.0:1234…")
             parser.print_usage()
             exit(4)
-    else:
+    else:  # Client
         try:
             host, port = args.connect.split(":")
-            Client.createClient(host, port, forwardPorts)
+            Client(host, port, forwardPorts)
         except ValueError:
-            print("Wrong address format! It should be like 0.0.0.0:1234…", file=sys.stderr)
+            error("Wrong address format! It should be like 0.0.0.0:1234…")
             parser.print_usage()
-            exit(5)
+            exit(4)
 
 
 if __name__ == '__main__': main()

@@ -5,7 +5,9 @@ MAINTAINER Adam Wallner <adam.wallner@gmail.com>
 COPY portredirector.py /opt/
 COPY docker_entry.sh /opt/
 
-RUN apt-get update && apt-get install -y iptables \
+RUN \
+    # Install needed packages
+    apt-get update && apt-get install -y iptables \
     # Make entry script working with pypy
     && ln -s /usr/local/bin/pypy3 /usr/local/bin/python3 \
     # Clean unneeded packages

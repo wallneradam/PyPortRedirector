@@ -5,9 +5,11 @@ MAINTAINER Adam Wallner <adam.wallner@gmail.com>
 COPY portredirector.py /opt/
 COPY docker_entry.sh /opt/
 
-RUN apk add --no-cache iptables bash gcc musl-dev make \
+RUN \
+    # Install needed packages
+    apk add --no-cache iptables bash gcc musl-dev make \
     # Install uvloop python module
-    && pip3 install uvloop \
+    && pip3 install uvloop async_timeout \
     # Clean unneeded packages
     && apk del gcc musl-dev make
 
