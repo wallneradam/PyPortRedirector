@@ -33,6 +33,7 @@ Another solution could be to create an SSH tunnel between the 2 machines. For th
 ## Dependencies
 
 - Python >= v3.5 (works with PyPy3 as well)
+- async_timeout >= 1.3.0: https://github.com/aio-libs/async-timeout/releases
 
 Optional:
 - uvloop: https://github.com/MagicStack/uvloop (it makes PyPortRedirector even faster) 
