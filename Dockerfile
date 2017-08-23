@@ -8,7 +8,7 @@ COPY docker_entry.sh /opt/
 RUN \
     # Install needed packages
     apk add --no-cache iptables bash gcc musl-dev make \
-    # Install uvloop python module
+    # Install python modules
     && pip3 install uvloop async_timeout \
     # Clean unneeded packages
     && apk del gcc musl-dev make

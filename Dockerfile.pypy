@@ -10,7 +10,10 @@ RUN \
     apt-get update && apt-get install -y iptables \
     # Make entry script working with pypy
     && ln -s /usr/local/bin/pypy3 /usr/local/bin/python3 \
+    # Install python modules
+    && pip3 install async_timeout \
     # Clean unneeded packages
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
